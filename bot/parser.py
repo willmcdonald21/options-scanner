@@ -15,20 +15,18 @@ from bot.models import (
     UnderlyingKey,
     UnknownEvent,
 )
-from bot.sizing import compute_contracts
 
 _MONTHS = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
     "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
 }
 
-# "Entered SPY Sep22 '26 769 Call" / "Entering QQQ Sep25 '26 741 Call from
-# $3.755" / "Fully out of NVDA Sep23 '26 230 Call." -- the one line that
-# carries the full, unambiguous contract identity (ticker + real expiry
-# incl. year + strike + right), present on BUY / NEW ALERT / SOLD ALL
-# descriptions.
+# "Entered SPY Sep22 '26 769 Call" / "Fully out of NVDA Sep23 '26 230
+# Call." -- the one line that carries the full, unambiguous contract
+# identity (ticker + real expiry incl. year + strike + right), present on
+# BUY / SOLD ALL descriptions.
 _CONTRACT_LINE_RE = re.compile(
-    r"(?:Entered|Entering|Fully out of)\s+"
+    r"(?:Entered|Fully out of)\s+"
     r"(?P<ticker>[A-Z]+)\s+"
     r"(?P<mon>[A-Za-z]{3})(?P<day>\d{1,2})\s*'(?P<yy>\d{2})\s+"
     r"(?P<strike>[\d.]+)\s+"
@@ -108,14 +106,14 @@ class ParsedEmbed:
     timestamp: datetime
 
 
-def parse_embed(embed: ParsedEmbed, default_cap_usd: float = 1000.0) -> TradeEvent:
+def parse_embed(embed: ParsedEmbed) -> TradeEvent:
     title = _strip_emoji_prefix(embed.title)
 
     try:
         if _TITLE_BUY_RE.match(title):
             return _parse_buy(embed, title)
         if _TITLE_NEW_ALERT_RE.match(title):
-            return _parse_new_alert(embed, title, default_cap_usd)
+            return InfoEvent(message_id=embed.message_id, kind="new_alert", raw_title=title)
         if _TITLE_AVG_DOWN_RE.match(title):
             return InfoEvent(message_id=embed.message_id, kind="averaging_down", raw_title=title)
         if _TITLE_TRIM_RE.match(title):
@@ -144,23 +142,6 @@ def _parse_buy(embed: ParsedEmbed, title: str) -> BuyEvent:
         contracts=int(embed.fields["Contracts"]),
         cost=_parse_money(embed.fields["Cost"]),
         is_lotto=is_lotto,
-    )
-
-
-def _parse_new_alert(embed: ParsedEmbed, title: str, default_cap_usd: float) -> BuyEvent:
-    """NEW ALERT carries no Contracts/Cost fields (a floated swing idea, not
-    a pre-sized fill) -- size it ourselves off the configured per-trade cap,
-    same as bot/sizing.py would size any other entry."""
-    option = _parse_contract_line(embed.description, embed.timestamp)
-    entry_price = _parse_money(embed.fields["Entry"])
-    contracts = compute_contracts(entry_price, default_cap_usd)
-    return BuyEvent(
-        message_id=embed.message_id,
-        option=option,
-        entry_price=entry_price,
-        contracts=contracts,
-        cost=contracts * entry_price * 100,
-        is_lotto=False,
     )
 
 

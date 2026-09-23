@@ -77,14 +77,20 @@ class ExpiredEvent:
 
 @dataclass(frozen=True)
 class InfoEvent:
-    """Recognized but explicitly non-actionable: a bare milestone ping
-    ("+25% -- close or trim & set SL to breakeven", narration only, not a
-    confirmed fill) or an AVERAGING DOWN (channel adds to its own size at
-    a new price; the bot doesn't average down its own fills). Logged for
-    visibility, never traded on."""
+    """Recognized but explicitly non-actionable:
+    - "milestone": a bare "+25%" ping ("close or trim & set SL to
+      breakeven") -- narration only, not a confirmed fill.
+    - "averaging_down": channel adds to its own size at a new price; the
+      bot doesn't average down its own fills.
+    - "new_alert": phrased prospectively ("Entering..." not "Entered..."),
+      missing Contracts/Cost, and missing the "Real trade · data via IBKR"
+      footer every confirmed fill carries -- reads as a watched level, not
+      an executed trade. Only one example seen so far, so treat this as
+      provisional pending more live traffic (see bot/parser.py).
+    Logged for visibility, never traded on."""
 
     message_id: int
-    kind: Literal["milestone", "averaging_down"]
+    kind: Literal["milestone", "averaging_down", "new_alert"]
     raw_title: str
 
 

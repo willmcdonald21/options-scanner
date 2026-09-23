@@ -36,11 +36,11 @@ def test_type_breakdown_matches_manual_count():
     for e in events:
         counts[type(e).__name__] = counts.get(type(e).__name__, 0) + 1
     assert counts == {
-        "BuyEvent": 21,  # 20 BUY + 1 NEW ALERT, now sized off the per-trade cap
+        "BuyEvent": 20,
         "TrimEvent": 2,
         "SoldAllEvent": 15,
         "ExpiredEvent": 4,
-        "InfoEvent": 38,  # milestones + the 7 AVERAGING DOWN messages, both disregarded
+        "InfoEvent": 39,  # milestones + 7 AVERAGING DOWN + 1 NEW ALERT, all disregarded
     }
 
 
@@ -58,13 +58,13 @@ def test_buy_event_fields():
     assert googl.is_lotto is False
 
 
-def test_new_alert_is_sized_off_the_cap_and_treated_as_a_buy():
+def test_new_alert_is_disregarded_not_traded():
     events = _events()
-    ev = next(e for e in events if isinstance(e, BuyEvent) and e.option.ticker == "QQQ" and e.option.expiry == date(2026, 9, 25))
-    assert ev.entry_price == 3.755
-    assert ev.contracts == 2  # floor(1000 / (3.755 * 100))
-    assert ev.cost == ev.contracts * ev.entry_price * 100
-    assert ev.is_lotto is False
+    new_alerts = [e for e in events if isinstance(e, InfoEvent) and e.kind == "new_alert"]
+    assert len(new_alerts) == 1
+    assert "NEW ALERT" in new_alerts[0].raw_title
+    # and it must not also show up as a BuyEvent for that contract
+    assert not any(isinstance(e, BuyEvent) and e.option.ticker == "QQQ" and e.option.expiry == date(2026, 9, 25) for e in events)
 
 
 def test_averaging_down_is_disregarded():
@@ -112,4 +112,4 @@ def test_expired_event_win_and_loss():
 def test_bare_milestones_are_informational_only():
     events = _events()
     kinds = {e.kind for e in events if isinstance(e, InfoEvent)}
-    assert kinds == {"milestone", "averaging_down"}
+    assert kinds == {"milestone", "averaging_down", "new_alert"}
