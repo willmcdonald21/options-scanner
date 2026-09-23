@@ -21,7 +21,15 @@ class SwiftCopyTrader(discord.Client):
     docstring for why -- the source channel isn't ours to get bot API
     access to) and mirrors each alert pasted there into IBKR."""
 
-    def __init__(self, *, config: AppConfig, ib: IB, store: PositionStore, notifier: Notifier):
+    def __init__(
+        self,
+        *,
+        config: AppConfig,
+        ib: IB,
+        store: PositionStore,
+        notifier: Notifier,
+        trade_notifier: Notifier,
+    ):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(intents=intents)
@@ -29,6 +37,7 @@ class SwiftCopyTrader(discord.Client):
         self.ib = ib
         self.store = store
         self.notifier = notifier
+        self.trade_notifier = trade_notifier
 
     async def on_ready(self) -> None:
         if not self.ib.isConnected():
@@ -60,7 +69,9 @@ class SwiftCopyTrader(discord.Client):
             # is theoretical, not practical, at this manual-paste cadence).
             parsed.message_id = message.id + index
             event = parse_embed(parsed)
-            handle_event(event, self.ib, self.store, self.notifier, self.config.risk)
+            handle_event(
+                event, self.ib, self.store, self.notifier, self.config.risk, trade_notifier=self.trade_notifier
+            )
 
 
 def main() -> None:
@@ -72,9 +83,10 @@ def main() -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     store = PositionStore(db_path)
     notifier = Notifier(config.discord.webhook_alerts)
+    trade_notifier = Notifier(config.discord.webhook_trade_activity)
     ib = IB()
 
-    client = SwiftCopyTrader(config=config, ib=ib, store=store, notifier=notifier)
+    client = SwiftCopyTrader(config=config, ib=ib, store=store, notifier=notifier, trade_notifier=trade_notifier)
     try:
         client.run(config.discord.bot_token)
     finally:

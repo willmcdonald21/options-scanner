@@ -19,6 +19,7 @@ class DiscordConfig(BaseModel):
     bot_token: str
     channel_id: int
     webhook_alerts: str = ""
+    webhook_trade_activity: str = ""
 
 
 class TradingConfig(BaseModel):
@@ -60,6 +61,7 @@ def load_config() -> AppConfig:
                 "bot_token": os.environ["DISCORD_BOT_TOKEN"],
                 "channel_id": int(os.environ["DISCORD_CHANNEL_ID"]),
                 "webhook_alerts": os.environ.get("DISCORD_WEBHOOK_ALERTS", ""),
+                "webhook_trade_activity": os.environ.get("DISCORD_WEBHOOK_TRADE_ACTIVITY", ""),
             },
             "trading": {
                 "mode": os.environ.get("MODE", "paper"),

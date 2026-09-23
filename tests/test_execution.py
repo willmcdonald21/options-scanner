@@ -169,7 +169,8 @@ def test_trim_event_mirrors_channel_rate(store, notifier):
         avg_exit_price=1.328,
     )
 
-    handle_event(event, ib, store, notifier, RiskConfig(max_usd_per_trade=1000.0))
+    trade_notifier = FakeNotifier()
+    handle_event(event, ib, store, notifier, RiskConfig(max_usd_per_trade=1000.0), trade_notifier=trade_notifier)
 
     assert len(ib.placed_orders) == 1
     _, order = ib.placed_orders[0]
@@ -181,6 +182,9 @@ def test_trim_event_mirrors_channel_rate(store, notifier):
     assert position.channel_remaining_qty == 8
     assert store.already_processed(5) is True
     assert notifier.alerts == []
+    assert len(trade_notifier.alerts) == 1
+    assert "TRIMMED 2x" in trade_notifier.alerts[0]
+    assert "2 remaining" in trade_notifier.alerts[0]
 
 
 def test_trim_event_zero_qty_still_updates_channel_bookkeeping_no_order(store, notifier):
@@ -254,7 +258,8 @@ def test_sold_all_sells_remaining_and_closes(store, notifier):
     _seeded_position(store, channel_total=15, channel_remaining=0, user_total=3, user_remaining=3)
     event = SoldAllEvent(message_id=9, underlying=UnderlyingKey("QQQ", 740.0, "C"), realized_pct=0.048, avg_exit_price=0.9275)
 
-    handle_event(event, ib, store, notifier, RiskConfig(max_usd_per_trade=1000.0))
+    trade_notifier = FakeNotifier()
+    handle_event(event, ib, store, notifier, RiskConfig(max_usd_per_trade=1000.0), trade_notifier=trade_notifier)
 
     _, order = ib.placed_orders[0]
     assert order.action == "SELL"
@@ -262,6 +267,8 @@ def test_sold_all_sells_remaining_and_closes(store, notifier):
     assert store.get_open(_qqq_option()) is None
     assert notifier.alerts == []
     assert store.already_processed(9) is True
+    assert len(trade_notifier.alerts) == 1
+    assert "SOLD ALL 3x" in trade_notifier.alerts[0]
 
 
 def test_sold_all_already_flat_closes_without_order(store, notifier):

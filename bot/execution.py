@@ -35,10 +35,15 @@ def handle_event(
     notifier: Notifier,
     risk: RiskConfig,
     fill_timeout_s: float = 10.0,
+    trade_notifier: Notifier | None = None,
 ) -> None:
     """Idempotent per message_id. Never raises -- every failure path alerts
     via notifier and returns, so one bad message never aborts a batch of
-    events being processed."""
+    events being processed.
+
+    trade_notifier, if given, gets a separate one-line post for every
+    successful SELL fill (TRIM or SOLD ALL) -- a "what did the bot actually
+    sell" feed, distinct from notifier's failure/rejection alerts."""
     if store.already_processed(event.message_id):
         return
 
@@ -46,9 +51,9 @@ def handle_event(
         if isinstance(event, BuyEvent):
             _handle_buy(event, ib, store, notifier, risk, fill_timeout_s)
         elif isinstance(event, TrimEvent):
-            _handle_trim(event, ib, store, notifier, fill_timeout_s)
+            _handle_trim(event, ib, store, notifier, fill_timeout_s, trade_notifier)
         elif isinstance(event, SoldAllEvent):
-            _handle_sold_all(event, ib, store, notifier, fill_timeout_s)
+            _handle_sold_all(event, ib, store, notifier, fill_timeout_s, trade_notifier)
         elif isinstance(event, ExpiredEvent):
             _handle_expired(event, store, notifier)
         elif isinstance(event, InfoEvent):
@@ -133,7 +138,12 @@ def _handle_buy(
 
 
 def _handle_trim(
-    event: TrimEvent, ib: IB, store: PositionStore, notifier: Notifier, fill_timeout_s: float
+    event: TrimEvent,
+    ib: IB,
+    store: PositionStore,
+    notifier: Notifier,
+    fill_timeout_s: float,
+    trade_notifier: Notifier | None = None,
 ) -> None:
     try:
         position = store.get_open_by_underlying(event.underlying)
@@ -181,11 +191,18 @@ def _handle_trim(
     )
 
     if outcome == "FILLED":
+        new_remaining = position.user_remaining_qty - sell_qty
         store.apply_trim(
             position.option,
             channel_remaining_qty=event.channel_remaining_after,
-            user_remaining_qty=position.user_remaining_qty - sell_qty,
+            user_remaining_qty=new_remaining,
         )
+        if trade_notifier is not None:
+            fill_price = trade.orderStatus.avgFillPrice or 0.0
+            trade_notifier.alert(
+                f"TRIMMED {sell_qty}x {position.option} @ ${fill_price:.2f} "
+                f"(tier +{event.tier_pct * 100:.0f}%) -- {new_remaining} remaining"
+            )
     else:
         # The user's real position didn't change -- local bookkeeping must
         # not claim it did. Next trim's baseline may be slightly stale
@@ -197,7 +214,12 @@ def _handle_trim(
 
 
 def _handle_sold_all(
-    event: SoldAllEvent, ib: IB, store: PositionStore, notifier: Notifier, fill_timeout_s: float
+    event: SoldAllEvent,
+    ib: IB,
+    store: PositionStore,
+    notifier: Notifier,
+    fill_timeout_s: float,
+    trade_notifier: Notifier | None = None,
 ) -> None:
     try:
         position = store.get_open_by_underlying(event.underlying)
@@ -238,6 +260,9 @@ def _handle_sold_all(
 
     if outcome == "FILLED":
         store.close_position(position.option)
+        if trade_notifier is not None:
+            fill_price = trade.orderStatus.avgFillPrice or 0.0
+            trade_notifier.alert(f"SOLD ALL {sell_qty}x {position.option} @ ${fill_price:.2f} -- position closed")
     else:
         reason = "was rejected" if outcome == "REJECTED" else f"did not confirm fill within {fill_timeout_s}s"
         notifier.alert(
