@@ -1,0 +1,1367 @@
+SwiftX's poll Who all took my trades today has closed. — 9/19/26, 4:54 PM
+Red + Took my trades
+Winning answer • 50%
+
+View Poll
+SwiftX — 9/20/26, 12:41 PM
+@vip access  lil busy tomorrow see you all on tuesday
+Swift Alerts
+APP
+ — 9/21/26, 9:46 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — SPY 769C · Sep 22
+Entered SPY Sep22 '26 769 Call
+Open Live Dashboard →
+Entry
+$0.885
+Contracts
+15
+Cost
+$1,328
+Trim Targets
+25%   $1.106
+50%   $1.328
+75%   $1.549
+100%  $1.770
+
+Real trade · data via IBKR · Not financial advice•9/21/26, 9:46 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — TSLA 380C · 0DTE
+Entered TSLA Sep21 '26 380 Call
+Open Live Dashboard →
+Entry
+$1.11
+Contracts
+10
+Cost
+$1,110
+Trim Targets
+25%   $1.388
+50%   $1.665
+75%   $1.943
+100%  $2.220
+
+Real trade · data via IBKR · Not financial advice•9/21/26, 9:47 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — TSLA 380C · 0DTE
+$1.11 → $1.305 · +17.6% (+$19.50/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•9/21/26, 9:51 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — SPY 769C · Sep 22
+$0.885 → $0.975 · +10.2% (+$9.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•9/21/26, 9:52 AM
+SwiftX — 9/21/26, 9:54 AM
+@vip access yall won't believe where i am trading from
+Swift Alerts
+APP
+ — 9/21/26, 9:55 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +60% — SPX 7700C · 0DTE
+Fully out of SPX Sep21 '26 7700 Call.
+Open Live Dashboard →
+Entry → avg exit
+$11.15 → $12.5525
+Realized
++12.58%
+Best fill
+$16.725
+Peak
++60.1% ($17.85)
+
+Real trade · data via IBKR · Not financial advice•9/21/26, 9:55 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +41% — TSLA 380C · 0DTE
+Fully out of TSLA Sep21 '26 380 Call.
+Open Live Dashboard →
+Entry → avg exit
+$1.11 → $1.1557
+Realized
++4.12%
+Best fill
+$1.388
+Peak
++41.0% ($1.565)
+Exit
+ Stop moved to break-even
+
+Real trade · data via IBKR · Not financial advice•9/21/26, 9:56 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — AMD 620C · 0DTE
+Entered AMD Sep21 '26 620 Call
+ Lotto Trade — RISKY
+Open Live Dashboard →
+Entry
+$1.40
+Contracts
+25
+Cost
+$3,500
+Trim Targets
+25%   $1.750
+50%   $2.100
+75%   $2.450
+100%  $2.800
+
+Real trade · data via IBKR · Not financial advice•9/21/26, 10:00 AM
+SwiftX — 9/21/26, 10:00 AM
+Super lotto size less
+With profits
+Swift Alerts
+APP
+ — 9/21/26, 10:01 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — AMD 620C · 0DTE
+$1.40 → $1.54 · +10.0% (+$14.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Notes:
+ Lotto Trade — RISKY
+
+Not financial advice•9/21/26, 10:01 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +35% — SPY 769C · Sep 22
+Fully out of SPY Sep22 '26 769 Call.
+Open Live Dashboard →
+Entry → avg exit
+$0.885 → $0.9275
+Realized
++4.80%
+Best fill
+$1.106
+Peak
++35.0% ($1.195)
+Exit
+ Stop moved to break-even
+
+Real trade · data via IBKR · Not financial advice•9/21/26, 10:07 AM
+SwiftX — 9/21/26, 10:14 AM
+@vip access putting out alerts from the chopper
+
+Done for the day bye
+Swift Alerts
+APP
+ — 9/21/26, 10:19 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +79% — AMD 620C · 0DTE
+Fully out of AMD Sep21 '26 620 Call.
+Open Live Dashboard →
+Entry → avg exit
+$1.40 → $1.652
+Realized
++18.00%
+Best fill
+$2.45
+Peak
++78.9% ($2.505)
+Exit
+ Stop moved to break-even
+
+Real trade · data via IBKR · Not financial advice•9/21/26, 10:19 AM
+Swift Alerts
+APP
+ — 9/21/26, 10:46 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — SPY 767P · 0DTE
+Entered SPY Sep21 '26 767 Put
+Open Live Dashboard →
+Entry
+$0.255
+Contracts
+40
+Cost
+$1,020
+Trim Targets
+25%   $0.319
+50%   $0.383
+75%   $0.446
+100%  $0.510
+News backdrop
+ Broad Market leaning up — 3 up / 1 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•9/21/26, 10:46 AM
+Swift Alerts
+APP
+ — 9/21/26, 11:10 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ AVERAGING DOWN — SPY 767P · 0DTE
+Averaging down on SPY Sep21 '26 767 Put
+Added 40 @ $0.175
+Open Live Dashboard →
+
+Average $0.255 → $0.215 · 40 → 80 contracts
+New Avg
+$0.215
+Total Contracts
+80
+Cost
+$1,720
+Trim Targets (new avg)
+25%   $0.269
+50%   $0.323
+75%   $0.376
+100%  $0.430
+
+Real trade · data via IBKR · Not financial advice•9/21/26, 11:10 AM
+Jonah — 9/21/26, 11:22 AM
+
+SwiftX — 9/21/26, 11:27 AM
+@vip access holding till eod spy put
+SwiftX — 9/21/26, 3:52 PM
+@vip access gonna post spx eod lotto
+Remember its lotto pro max
+@vip access unpredictable market pump today. Price action didn't work for SPY puts. No one expected this much pump tbh
+Swift Alerts
+APP
+ — 9/21/26, 3:56 PM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — SPX 7765P · 0DTE
+Entered SPX Sep21 '26 7765 Put
+ Super Lotto Trade — Super RISKY
+Open Live Dashboard →
+Entry
+$0.725
+Contracts
+15
+Cost
+$1,088
+Trim Targets
+25%   $0.906
+50%   $1.088
+75%   $1.269
+100%  $1.450
+News backdrop
+ Broad Market leaning up — 10 up / 1 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•9/21/26, 3:56 PM
+
+SWIFT TRADES · LIVE DESK
+ EXPIRED · WIN — SPY 767P · 0DTE
+Peaked at $0.26 from $0.215 · +2.0%
+Open Live Dashboard →
+
+Not financial advice•9/21/26, 4:00 PM
+
+SWIFT TRADES · LIVE DESK
+ EXPIRED · LOSS — SPX 7765P · 0DTE
+Peaked at $0.625 from $0.725 · +0.0%
+Open Live Dashboard →
+
+Notes:
+ Super Lotto Trade — Super RISKY
+
+Not financial advice•9/21/26, 4:00 PM
+SwiftX — 9/21/26, 4:00 PM
+GG didn't work out well
+@vip access was not at home today cause of my birthday. 3-2 for the day
+Tomorrow we go full in
+SwiftX — 9/21/26, 4:08 PM
+SWIFT DAILY RECAP - 21 September 2026
+TOP PLAY: $AMD - 620C 9/21 | +78.93%
+SwiftX — 9/21/26, 4:37 PM
+@vip access one thing lets focus from tomorrow is we do all my trades not cherry pick and end up losing today was an example as well to whoever took only the spy puts. Always size equally
+SwiftX — Yesterday at 9:20 AM
+@vip access Lets get this started!
+@vip access Size less on market open first 30 mins
+Swift Alerts
+APP
+ — Yesterday at 9:32 AM
+
+SWIFT TRADES · LIVE DESK
+ +100% — AAPL 345C · Sep 25
+$1.77 → $3.75 · +111.9% (+$198.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Notes:
+ Lotto Trade — RISKY
+
+Not financial advice•Yesterday at 9:32 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +122% — AAPL 345C · Sep 25
+Fully out of AAPL Sep25 '26 345 Call.
+Open Live Dashboard →
+Entry → avg exit
+$1.77 → $2.633
+Realized
++48.76%
+Best fill
+$3.098
+Peak
++121.8% ($3.925)
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 9:34 AM
+Swift Alerts
+APP
+ — Yesterday at 9:48 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — SPY 774P · 0DTE
+Entered SPY Sep22 '26 774 Put
+Open Live Dashboard →
+Entry
+$1.135
+Contracts
+15
+Cost
+$1,702
+Trim Targets
+25%   $1.419
+50%   $1.703
+75%   $1.986
+100%  $2.270
+News backdrop
+ Broad Market leaning up — 2 up / 1 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 9:48 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — GOOGL 367.5C · Sep 23
+Entered GOOGL Sep23 '26 367.5 Call
+Open Live Dashboard →
+Entry
+$1.575
+Contracts
+10
+Cost
+$1,575
+Trim Targets
+25%   $1.969
+50%   $2.363
+75%   $2.756
+100%  $3.150
+News backdrop
+ Tech leaning up — 17 up / 5 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 9:51 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — SPY 772P · 0DTE
+Entered SPY Sep22 '26 772 Put
+ Lotto Trade — RISKY
+Open Live Dashboard →
+Entry
+$0.485
+Contracts
+25
+Cost
+$1,213
+Trim Targets
+25%   $0.606
+50%   $0.728
+75%   $0.849
+100%  $0.970
+News backdrop
+ Broad Market leaning up — 4 up / 1 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 10:54 AM
+Swift Alerts
+APP
+ — Yesterday at 9:55 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — SPY 772P · 0DTE
+$0.395 → $0.445 · +12.7% (+$5.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Yesterday at 9:55 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ AVERAGING DOWN — GOOGL 367.5C · Sep 23
+Averaging down on GOOGL Sep23 '26 367.5 Call
+Added 10 @ $1.015
+Open Live Dashboard →
+
+Average $1.575 → $1.295 · 10 → 20 contracts
+New Avg
+$1.295
+Total Contracts
+20
+Cost
+$2,590
+Trim Targets (new avg)
+25%   $1.619
+50%   $1.943
+75%   $2.266
+100%  $2.590
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 9:57 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — SPY 773P · 0DTE
+Entered SPY Sep22 '26 773 Put
+Open Live Dashboard →
+Entry
+$0.725
+Contracts
+15
+Cost
+$1,088
+Trim Targets
+25%   $0.906
+50%   $1.088
+75%   $1.269
+100%  $1.450
+News backdrop
+ Broad Market leaning up — 2 up / 1 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 9:59 AM
+Swift Alerts
+APP
+ — Yesterday at 10:10 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — QQQ 744P · 0DTE
+Entered QQQ Sep22 '26 744 Put
+ Lotto Trade — RISKY
+Open Live Dashboard →
+Entry
+$1.085
+Contracts
+10
+Cost
+$1,085
+Trim Targets
+25%   $1.356
+50%   $1.628
+75%   $1.899
+100%  $2.170
+News backdrop
+ Tech leaning up — 17 up / 5 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 10:10 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ AVERAGING DOWN — QQQ 744P · 0DTE
+Averaging down on QQQ Sep22 '26 744 Put
+Added 10 @ $0.725
+Open Live Dashboard →
+
+Average $1.085 → $0.905 · 10 → 20 contracts
+Notes:  Lotto Trade — RISKY
+New Avg
+$0.905
+Total Contracts
+20
+Cost
+$1,810
+Trim Targets (new avg)
+25%   $1.131
+50%   $1.358
+75%   $1.584
+100%  $1.810
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 10:15 AM
+SwiftX — Yesterday at 10:18 AM
+@vip access Yall pls chill tf down
+Stop pissing me off cause u all pussy af.
+Give it time. Market just opened!
+Swift Alerts
+APP
+ — Yesterday at 10:35 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — SPY 774P · 0DTE
+$1.135 → $1.335 · +17.6% (+$20.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Yesterday at 10:35 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — SPY 773P · 0DTE
+$0.725 → $0.835 · +15.2% (+$11.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Yesterday at 10:35 AM
+SwiftX — Yesterday at 10:35 AM
+@vip access Happy now i guess
+Swift Alerts
+APP
+ — Yesterday at 10:37 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +38% — SPY 772P · 0DTE
+Fully out of SPY Sep22 '26 772 Put.
+Open Live Dashboard →
+Entry → avg exit
+$0.395 → $0.41126
+Realized
++4.12%
+Best fill
+$0.494
+Peak
++38.0% ($0.545)
+Exit
+ Stop moved to break-even
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 10:37 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — QQQ 744P · 0DTE
+$0.905 → $1.005 · +11.0% (+$10.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Notes:
+ Lotto Trade — RISKY
+
+Not financial advice•Yesterday at 10:41 AM
+Swift Alerts
+APP
+ — Yesterday at 10:44 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — NVDA 230C · Sep 23
+Entered NVDA Sep23 '26 230 Call
+ Lotto Trade — RISKY
+Open Live Dashboard →
+Entry
+$0.855
+Contracts
+15
+Cost
+$1,283
+Trim Targets
+25%   $1.069
+50%   $1.283
+75%   $1.496
+100%  $1.710
+News backdrop
+ Semiconductors leaning up — 4 up / 3 down in the last 6h
+Real trade · data via IBKR · Not financial advice•Yesterday at 10:44 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +43% — QQQ 744P · 0DTE
+Fully out of QQQ Sep22 '26 744 Put.
+Open Live Dashboard →
+Entry → avg exit
+$0.905 → $0.95013
+Realized
++4.99%
+Best fill
+$1.131
+Peak
++43.1% ($1.295)
+Exit
+ Stop moved to break-even
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 10:48 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — NVDA 230C · Sep 23
+$0.855 → $0.945 · +10.5% (+$9.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Notes:
+ Lotto Trade — RISKY
+
+Not financial advice•Yesterday at 10:49 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +39% — SPY 773P · 0DTE
+Fully out of SPY Sep22 '26 773 Put.
+Open Live Dashboard →
+Entry → avg exit
+$0.725 → $0.7622
+Realized
++5.13%
+Best fill
+$0.906
+Peak
++38.6% ($1.005)
+Exit
+ Stop moved to break-even
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 10:49 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +38% — SPY 774P · 0DTE
+Fully out of SPY Sep22 '26 774 Put.
+Open Live Dashboard →
+Entry → avg exit
+$1.135 → $1.1858
+Realized
++4.48%
+Best fill
+$1.419
+Peak
++37.9% ($1.565)
+Exit
+ Stop moved to break-even
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 10:49 AM
+SwiftX — Yesterday at 10:51 AM
+@vip access
+Swift Alerts
+APP
+ — Yesterday at 11:02 AM
+
+SWIFT TRADES · LIVE DESK
+ TRIM +25% — NVDA 230C · Sep 23
+Sold 3 of 15 @ $1.069 · 12 still running.
+Stop moved to break-even. Trim filled at $1.069 (+25%, trigger was +25%). Remaining 12 now stopped at $0.89 — this position can no longer lose money.
+Open Live Dashboard →
+Entry
+$0.855
+Exit
+$1.069
+Locked In
++$64.14
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 11:02 AM
+SwiftX — Yesterday at 11:05 AM
+@vip access hope yall are trimming
+Swift Alerts
+APP
+ — Yesterday at 11:36 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +42% — NVDA 230C · Sep 23
+Fully out of NVDA Sep23 '26 230 Call.
+Open Live Dashboard →
+Entry → avg exit
+$0.855 → $0.9018
+Realized
++5.47%
+Best fill
+$1.069
+Peak
++42.1% ($1.215)
+Exit
+ Stop moved to break-even
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 11:36 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — SPY 772P · 0DTE
+$0.485 → $0.535 · +10.3% (+$5.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Notes:
+ Lotto Trade — RISKY
+
+Not financial advice•Yesterday at 11:37 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — QQQ 740P · 0DTE
+Entered QQQ Sep22 '26 740 Put
+ Super Lotto Trade — Super RISKY
+Open Live Dashboard →
+Entry
+$0.195
+Contracts
+200
+Cost
+$3,900
+Trim Targets
+25%   $0.244
+50%   $0.293
+75%   $0.341
+100%  $0.390
+News backdrop
+ Tech leaning up — 20 up / 5 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 11:40 AM
+Swift Alerts
+APP
+ — Yesterday at 12:12 PM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ AVERAGING DOWN — SPY 772P · 0DTE
+Averaging down on SPY Sep22 '26 772 Put
+Added 25 @ $0.295
+Open Live Dashboard →
+
+Average $0.485 → $0.39 · 25 → 50 contracts
+Notes:  Lotto Trade — RISKY
+New Avg
+$0.39
+Total Contracts
+50
+Cost
+$1,950
+Trim Targets (new avg)
+25%   $0.488
+50%   $0.585
+75%   $0.683
+100%  $0.780
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 12:12 PM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ AVERAGING DOWN — QQQ 740P · 0DTE
+Averaging down on QQQ Sep22 '26 740 Put
+Added 200 @ $0.085
+Open Live Dashboard →
+
+Average $0.195 → $0.14 · 200 → 400 contracts
+Notes:  Super Lotto Trade — Super RISKY
+New Avg
+$0.14
+Total Contracts
+400
+Cost
+$5,600
+Trim Targets (new avg)
+25%   $0.175
+50%   $0.210
+75%   $0.245
+100%  $0.280
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 12:12 PM
+SwiftX — Yesterday at 12:13 PM
+@vip access aint look good today for me as well. Prolly Red day incoming
+after a long streak of green
+SwiftX — Yesterday at 1:09 PM
+@vip access whoever held NVDA GG 80%
+Swift Alerts
+APP
+ — Yesterday at 3:44 PM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — SPY 774P · 0DTE
+Entered SPY Sep22 '26 774 Put
+ Super Lotto Trade — Super RISKY
+Open Live Dashboard →
+Entry
+$0.165
+Contracts
+25
+Cost
+$413
+Trim Targets
+25%   $0.206
+50%   $0.248
+75%   $0.289
+100%  $0.330
+News backdrop
+ Broad Market leaning up — 3 up / 0 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 3:44 PM
+Swift Alerts
+APP
+ — Yesterday at 3:53 PM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL -15% — SPY 774P · 0DTE
+Fully out of SPY Sep22 '26 774 Put.
+Open Live Dashboard →
+Entry → avg exit
+$0.165 → $0.14
+Realized
+-15.15%
+Peak
++918.2% ($1.68)
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 3:53 PM
+SwiftX — Yesterday at 3:54 PM
+@vip access gonna post eod spx
+Swift Alerts
+APP
+ — Yesterday at 3:58 PM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — SPX 7765P · 0DTE
+Entered SPX Sep22 '26 7765 Put
+Open Live Dashboard →
+Entry
+$0.525
+Contracts
+15
+Cost
+$788
+Trim Targets
+25%   $0.656
+50%   $0.788
+75%   $0.919
+100%  $1.050
+News backdrop
+ Broad Market leaning up — 3 up / 0 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 3:58 PM
+
+SWIFT TRADES · LIVE DESK
+ +10% — SPX 7765P · 0DTE
+$0.525 → $0.825 · +57.1% (+$30.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Yesterday at 3:58 PM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +100% — SPX 7765P · 0DTE
+Fully out of SPX Sep22 '26 7765 Put.
+Open Live Dashboard →
+Entry → avg exit
+$0.525 → $0.6792
+Realized
++29.37%
+Best fill
+$1.05
+Peak
++100.0% ($1.05)
+
+Real trade · data via IBKR · Not financial advice•Yesterday at 4:00 PM
+
+SWIFT TRADES · LIVE DESK
+ EXPIRED · WIN — SPY 772P · 0DTE
+Peaked at $0.59 from $0.39 · +49.4%
+Open Live Dashboard →
+
+Notes:
+ Lotto Trade — RISKY
+
+Not financial advice•Yesterday at 4:00 PM
+
+SWIFT TRADES · LIVE DESK
+ EXPIRED · WIN — QQQ 740P · 0DTE
+Peaked at $0.21 from $0.14 · +7.7%
+Open Live Dashboard →
+
+Notes:
+ Super Lotto Trade — Super RISKY
+
+Not financial advice•Yesterday at 4:00 PM
+SwiftX — Yesterday at 4:01 PM
+@vip access this shit went up 600% right after I sold in 2 mins btw
+What a sad fucking day
+SwiftX — Yesterday at 4:13 PM
+@vip access whoever held it pls tag me
+SwiftX — Yesterday at 5:13 PM
+SWIFT DAILY RECAP - 22 September 2026
+TOP PLAY: $AAPL - 9/25 345C | +121.75%
+SwiftX — 9:34 AM
+Swift Alerts
+APP
+ — 9:34 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — AMZN 255C · 0DTE
+$0.475 → $0.545 · +14.7% (+$7.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Notes:
+ Lotto Trade — RISKY
+
+Not financial advice•Today at 9:34 AM
+Swift Alerts
+APP
+ — 9:55 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — SPY 772C · 0DTE
+Entered SPY Sep23 '26 772 Call
+Open Live Dashboard →
+Entry
+$0.515
+Contracts
+25
+Cost
+$1,288
+Trim Targets
+25%   $0.644
+50%   $0.773
+75%   $0.901
+100%  $1.030
+News backdrop
+ Broad Market leaning up — 2 up / 1 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Today at 9:55 AM
+Swift Alerts
+APP
+ — 10:02 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — QQQ 746C · 0DTE
+$0.545 → $0.71 · +30.3% (+$16.50/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 10:02 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — QQQ 746C · 0DTE
+Entered QQQ Sep23 '26 746 Call
+Open Live Dashboard →
+Entry
+$0.545
+Contracts
+25
+Cost
+$1,363
+Trim Targets
+25%   $0.681
+50%   $0.818
+75%   $0.954
+100%  $1.090
+News backdrop
+ Tech leaning up — 15 up / 5 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Today at 10:02 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ AVERAGING DOWN — QQQ 746C · 0DTE
+Averaging down on QQQ Sep23 '26 746 Call
+Added 25 @ $0.265
+Open Live Dashboard →
+
+Average $0.545 → $0.405 · 25 → 50 contracts
+New Avg
+$0.405
+Total Contracts
+50
+Cost
+$2,025
+Trim Targets (new avg)
+25%   $0.506
+50%   $0.608
+75%   $0.709
+100%  $0.810
+
+Real trade · data via IBKR · Not financial advice•Today at 10:07 AM
+SwiftX — 10:25 AM
+@vip access Not really having a good start
+Swift Alerts
+APP
+ — 10:27 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL -75% — QQQ 746C · 0DTE
+Fully out of QQQ Sep23 '26 746 Call.
+Open Live Dashboard →
+Entry → avg exit
+$0.405 → $0.10
+Realized
+-75.31%
+Peak
++0.0% ($0.265)
+
+Real trade · data via IBKR · Not financial advice•Today at 10:27 AM
+SwiftX — 10:27 AM
+@vip access Out of both sorry for that
+Swift Alerts
+APP
+ — 10:38 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — QQQ 741C · 0DTE
+Entered QQQ Sep23 '26 741 Call
+Open Live Dashboard →
+Entry
+$0.945
+Contracts
+25
+Cost
+$2,363
+Trim Targets
+25%   $1.181
+50%   $1.418
+75%   $1.654
+100%  $1.890
+News backdrop
+ Tech leaning up — 15 up / 5 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Today at 10:38 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — QQQ 741C · 0DTE
+$0.945 → $1.055 · +11.6% (+$11.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 10:41 AM
+
+SWIFT TRADES · LIVE DESK
+ +25% — QQQ 741C · 0DTE
+$0.945 → $1.185 · +25.4% (+$24.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 10:45 AM
+SwiftX — 10:45 AM
+@vip access
+Swift Alerts
+APP
+ — 10:48 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ NEW ALERT — QQQ 741C · Sep 25
+Entering QQQ Sep25 '26 741 Call from $3.755
+Open Live Dashboard →
+Entry
+$3.755
+Trim Targets
+25%   $4.694
+50%   $5.633
+75%   $6.571
+100%  $7.510
+News backdrop
+ Tech leaning up — 15 up / 5 down in the last 6h
+
+Not financial advice•Today at 10:48 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — MSFT 502.5C · 0DTE
+Entered MSFT Sep23 '26 502.5 Call
+Open Live Dashboard →
+Entry
+$0.91
+Contracts
+10
+Cost
+$910
+Trim Targets
+25%   $1.138
+50%   $1.365
+75%   $1.593
+100%  $1.820
+News backdrop
+ Tech leaning up — 15 up / 5 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Today at 10:49 AM
+
+SWIFT TRADES · LIVE DESK
+ +50% — QQQ 741C · 0DTE
+$0.945 → $1.45 · +53.4% (+$50.50/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 10:51 AM
+SwiftX — 10:52 AM
+@vip access lets get that bagger
+Swift Alerts
+APP
+ — 10:53 AM
+
+SWIFT TRADES · LIVE DESK
+ +75% — QQQ 741C · 0DTE
+$0.945 → $1.675 · +77.2% (+$73.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 10:53 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — QQQ 741C · Sep 25
+$3.755 → $4.245 · +13.0% (+$49.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 10:53 AM
+
+SWIFT TRADES · LIVE DESK
+ +100% — QQQ 741C · 0DTE
+$0.945 → $1.95 · +106.3% (+$100.50/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 10:53 AM
+SwiftX — 10:54 AM
+@vip access Bagger
+Swift Alerts
+APP
+ — 10:54 AM
+
+SWIFT TRADES · LIVE DESK
+ +125% — QQQ 741C · 0DTE
+$0.945 → $2.34 · +147.6% (+$139.50/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 10:54 AM
+
+SWIFT TRADES · LIVE DESK
+ +25% — QQQ 741C · Sep 25
+$3.755 → $4.855 · +29.3% (+$110.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 10:54 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — MSFT 502.5C · 0DTE
+$0.91 → $1.04 · +14.3% (+$13.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 10:55 AM
+
+SWIFT TRADES · LIVE DESK
+ +25% — MSFT 502.5C · 0DTE
+$0.91 → $1.19 · +30.8% (+$28.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 10:57 AM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — META 770C · 0DTE
+Entered META Sep23 '26 770 Call
+Open Live Dashboard →
+Entry
+$0.605
+Contracts
+25
+Cost
+$1,513
+Trim Targets
+25%   $0.756
+50%   $0.908
+75%   $1.059
+100%  $1.210
+News backdrop
+ Tech leaning up — 15 up / 5 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Today at 11:00 AM
+SwiftX — 11:10 AM
+@vip access AVG DOWN META
+AT BE
+Swift Alerts
+APP
+ — 11:20 AM
+
+SWIFT TRADES · LIVE DESK
+ +10% — META 770C · 0DTE
+$0.605 → $0.675 · +11.6% (+$7.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 11:20 AM
+
+SWIFT TRADES · LIVE DESK
+ +25% — META 770C · 0DTE
+$0.605 → $0.80 · +32.2% (+$19.50/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 11:20 AM
+
+SWIFT TRADES · LIVE DESK
+ +50% — META 770C · 0DTE
+$0.605 → $0.955 · +57.9% (+$35.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 11:20 AM
+
+SWIFT TRADES · LIVE DESK
+ +75% — META 770C · 0DTE
+$0.605 → $1.14 · +88.4% (+$53.50/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 11:20 AM
+
+SWIFT TRADES · LIVE DESK
+ +100% — META 770C · 0DTE
+$0.605 → $1.23 · +103.3% (+$62.50/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 11:21 AM
+
+SWIFT TRADES · LIVE DESK
+ +125% — META 770C · 0DTE
+$0.605 → $1.42 · +134.7% (+$81.50/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Not financial advice•Today at 11:25 AM
+Swift Alerts
+APP
+ — 12:25 PM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ BUY — QQQ 740C · 0DTE
+Entered QQQ Sep23 '26 740 Call
+Open Live Dashboard →
+Entry
+$1.215
+Contracts
+10
+Cost
+$1,215
+Trim Targets
+25%   $1.519
+50%   $1.823
+75%   $2.126
+100%  $2.430
+News backdrop
+ Tech leaning up — 17 up / 8 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•Today at 12:25 PM
+
+SWIFT TRADES · LIVE DESK
+ +10% — QQQ 740C · 0DTE
+$1.215 → $1.355 · +11.5% (+$14.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Notes:
+ Lotto Trade — RISKY
+
+Not financial advice•Today at 12:30 PM
+Swift Alerts
+APP
+ — 12:40 PM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL +108% — META 770C · 0DTE
+Fully out of META Sep23 '26 770 Call.
+Open Live Dashboard →
+Entry → avg exit
+$0.605 → $0.7061
+Realized
++16.71%
+Best fill
+$0.908
+Peak
++108.3% ($1.26)
+Exit
+ Stop moved to break-even
+
+Real trade · data via IBKR · Not financial advice•Today at 12:40 PM
+Swift Alerts
+APP
+ — 1:04 PM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ AVERAGING DOWN — QQQ 740C · 0DTE
+Averaging down on QQQ Sep23 '26 740 Call
+Added 10 @ $0.555
+Open Live Dashboard →
+
+Average $1.215 → $0.885 · 10 → 20 contracts
+Notes:  Lotto Trade — RISKY
+New Avg
+$0.885
+Total Contracts
+20
+Cost
+$1,770
+Trim Targets (new avg)
+25%   $1.106
+50%   $1.328
+75%   $1.549
+100%  $1.770
+
+Real trade · data via IBKR · Not financial advice•Today at 1:04 PM
+Swift Alerts
+APP
+ — 1:19 PM
+
+SWIFT TRADES · LIVE DESK
+ +10% — QQQ 740C · 0DTE
+$0.885 → $0.975 · +10.2% (+$9.00/contract)
+Close or trim & set SL to breakeven.
+Open Live Dashboard →
+
+Notes:
+ Lotto Trade — RISKY
+
+Not financial advice•Today at 1:19 PM
+Swift Alerts
+APP
+ — 1:46 PM
+
+SWIFT TRADES · LIVE DESK
+ TRIM +75% — QQQ 740C · 0DTE
+Sold 12 of 20 · avg $1.328 · 8 still running
+4 × $1.106   +25%
+4 × $1.328   +50%
+4 × $1.549   +75%
+
+Open Live Dashboard →
+Entry
+$0.885
+Exit
+$1.328
+Locked In
++$531.04
+
+Real trade · data via IBKR · Not financial advice•Today at 1:46 PM
+Swift Alerts
+APP
+ — 1:57 PM
+@vip access
+
+SWIFT TRADES · LIVE DESK
+ SOLD ALL -1% — QQQ 741C · 0DTE
+Fully out of QQQ Sep23 '26 741 Call.
+Open Live Dashboard →
+Entry → avg exit
+$0.945 → $0.94
+Realized
+-0.53%
+Peak
++148.7% ($2.35)
+
+Real trade · data via IBKR · Not financial advice•Today at 1:57 PM
