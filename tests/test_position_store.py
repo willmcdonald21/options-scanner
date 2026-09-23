@@ -88,6 +88,17 @@ def test_apply_averaging_down_updates_totals_and_entry_price(store):
     assert found.user_remaining_qty == 16
 
 
+def test_list_open_returns_only_open_positions(store):
+    open_option = _qqq_740c()
+    closed_option = OptionKey("SPY", date(2026, 9, 22), 769.0, "C")
+    store.create_open(OpenPosition(open_option, 10, 10, 8, 8, 1.0, 1))
+    store.create_open(OpenPosition(closed_option, 10, 10, 8, 8, 1.0, 2))
+    store.close_position(closed_option)
+
+    open_positions = store.list_open()
+    assert [p.option for p in open_positions] == [open_option]
+
+
 def test_ambiguous_underlying_lookup_raises(store):
     q1 = OptionKey("QQQ", date(2026, 9, 23), 740.0, "C")
     q2 = OptionKey("QQQ", date(2026, 9, 25), 740.0, "C")

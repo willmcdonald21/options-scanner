@@ -66,6 +66,10 @@ class PositionStore:
             )
         return _row_to_position(rows[0]) if rows else None
 
+    def list_open(self) -> list[OpenPosition]:
+        rows = self._conn.execute("SELECT * FROM positions WHERE status = 'OPEN'").fetchall()
+        return [_row_to_position(row) for row in rows]
+
     def create_open(self, position: OpenPosition) -> None:
         self._conn.execute(
             """INSERT INTO positions

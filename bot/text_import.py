@@ -39,12 +39,10 @@ def parse_chat_export(text: str, reference_date: datetime | None = None) -> list
     block, skipping every other line in the export (human chat, polls,
     the plain-text daily recap) since those never contain that marker.
 
-    This exists to validate/backtest the parser against real historical
-    chat logs. Production ingestion should prefer real discord.Embed
-    objects (message.embeds[i].to_dict()) via the live bot instead, since
-    field names are then keyed directly rather than re-derived from
-    rendered text -- but the two normalize into the same ParsedEmbed shape
-    parse_embed() consumes, so the parsing logic itself is identical either way.
+    Also used for live ingestion (bot/main.py) -- the source channel isn't
+    ours to get bot API access to, so alerts are manually copy-pasted into
+    a relay channel the user does own, arriving as plain message.content
+    in exactly this shape. Same parsing logic either way.
     """
     reference_date = reference_date or datetime.now()
     lines = text.splitlines()
