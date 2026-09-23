@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 from bot.models import OpenPosition, OptionKey, UnderlyingKey
 
@@ -133,6 +134,41 @@ class PositionStore:
                 option.expiry.isoformat(),
                 option.strike,
                 option.right,
+            ),
+        )
+        self._conn.commit()
+
+    def record_order(
+        self,
+        message_id: int,
+        option: OptionKey,
+        ib_order_id: int | None,
+        action: Literal["BUY", "SELL"],
+        contracts: int,
+        status: Literal["FILLED", "REJECTED", "TIMEOUT"],
+        avg_fill_price: float | None = None,
+        order_type: str = "MKT",
+    ) -> None:
+        """Append-only audit row for one placeOrder call, recorded once its
+        terminal state is known -- see db/schema.sql for why this is
+        separate from processed_messages idempotency tracking."""
+        self._conn.execute(
+            """INSERT INTO orders
+               (message_id, ticker, expiry, strike, right, ib_order_id, action,
+                contracts, order_type, status, avg_fill_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                message_id,
+                option.ticker,
+                option.expiry.isoformat(),
+                option.strike,
+                option.right,
+                ib_order_id,
+                action,
+                contracts,
+                order_type,
+                status,
+                avg_fill_price,
             ),
         )
         self._conn.commit()
