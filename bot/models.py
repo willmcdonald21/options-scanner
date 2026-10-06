@@ -30,6 +30,17 @@ class UnderlyingKey:
 
 
 @dataclass(frozen=True)
+class TrimTarget:
+    """One rung of the channel's own "Trim Targets" ladder, e.g.
+    ("25%  $2.381") -> pct=0.25, price=2.381. We place these as resting
+    limit orders at entry rather than waiting for the channel's TRIM
+    message, so an exit never depends on a human pasting in time."""
+
+    pct: float
+    price: float
+
+
+@dataclass(frozen=True)
 class BuyEvent:
     message_id: int
     option: OptionKey
@@ -37,6 +48,7 @@ class BuyEvent:
     contracts: int
     cost: float
     is_lotto: bool = False
+    trim_targets: tuple[TrimTarget, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -118,3 +130,33 @@ class OpenPosition:
     entry_price: float
     ibkr_order_id_entry: int | None
     status: Literal["OPEN", "CLOSED"] = "OPEN"
+    current_stop_price: float | None = None
+    # Highest trim tier reached so far, as an index into the ladder:
+    # -1 = none yet (stop still at its initial STOP_LOSS_PCT level),
+    # 0 = TP1 reached (stop at breakeven), 1 = TP2 reached, ...
+    stop_tier_index: int = -1
+    runner_qty: int = 0
+    trim_targets: tuple[TrimTarget, ...] = ()
+    id: int | None = None
+
+
+@dataclass
+class TargetLeg:
+    """One tranche's resting orders at IBKR. A tranche is either a
+    take-profit pair (limit + its OCA-paired stop) or a runner (stop
+    only, tp_price None) -- see bot/exit_plan.py."""
+
+    position_id: int
+    tier_index: int
+    qty: int
+    tp_price: float | None
+    current_stop_price: float
+    oca_group: str
+    lmt_order_id: int | None = None
+    stp_order_id: int | None = None
+    status: Literal["LIVE", "TP_FILLED", "STOP_FILLED", "CANCELLED"] = "LIVE"
+    id: int | None = None
+
+    @property
+    def is_runner(self) -> bool:
+        return self.tp_price is None

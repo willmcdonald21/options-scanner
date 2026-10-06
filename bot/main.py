@@ -6,6 +6,7 @@ import discord
 from ib_async import IB, util
 
 from bot.execution import handle_event
+from bot.fill_watcher import FillWatcher
 from bot.logging_config import setup_logging
 from bot.notifier import Notifier
 from bot.parser import parse_embed
@@ -29,6 +30,7 @@ class SwiftCopyTrader(discord.Client):
         store: PositionStore,
         notifier: Notifier,
         trade_notifier: Notifier,
+        watcher: FillWatcher,
     ):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -38,6 +40,7 @@ class SwiftCopyTrader(discord.Client):
         self.store = store
         self.notifier = notifier
         self.trade_notifier = trade_notifier
+        self.watcher = watcher
 
     async def on_ready(self) -> None:
         if not self.ib.isConnected():
@@ -46,6 +49,10 @@ class SwiftCopyTrader(discord.Client):
                 self.config.trading.port,
                 clientId=self.config.trading.client_id,
             )
+        # Subscribe to our own fills before reconciling, so a target that
+        # fills during startup is still laddered rather than missed.
+        self.watcher.start()
+        self.watcher.reconcile()
         logger.info(
             "Ready: Discord as %s, IBKR connected (mode=%s, port=%s)",
             self.user,
@@ -60,6 +67,17 @@ class SwiftCopyTrader(discord.Client):
             return
 
         embeds = parse_chat_export(message.content, reference_date=message.created_at)
+        if not embeds:
+            # Better to be told about a paste we couldn't read than to drop
+            # an alert silently -- a missed BUY is a missed trade, and a
+            # missed SOLD ALL leaves a position running.
+            logger.warning("No alert card found in message %s", message.id)
+            self.notifier.alert(
+                f"Could not find an alert card in a message pasted to the relay channel "
+                f"(id={message.id}). First 120 chars: {message.content[:120]!r}"
+            )
+            return
+
         for index, parsed in enumerate(embeds):
             # Override text_import's fabricated sequential id with a real,
             # stable one derived from the Discord snowflake -- add (not
@@ -72,6 +90,8 @@ class SwiftCopyTrader(discord.Client):
             handle_event(
                 event, self.ib, self.store, self.notifier, self.config.risk, trade_notifier=self.trade_notifier
             )
+        # A new entry needs a market-data feed for its runner's ladder.
+        self.watcher.subscribe_open_positions()
 
 
 def main() -> None:
@@ -86,7 +106,23 @@ def main() -> None:
     trade_notifier = Notifier(config.discord.webhook_trade_activity)
     ib = IB()
 
-    client = SwiftCopyTrader(config=config, ib=ib, store=store, notifier=notifier, trade_notifier=trade_notifier)
+    watcher = FillWatcher(
+        ib=ib,
+        store=store,
+        risk=config.risk,
+        notifier=notifier,
+        trade_notifier=trade_notifier,
+        market_data_type=config.trading.market_data_type,
+    )
+
+    client = SwiftCopyTrader(
+        config=config,
+        ib=ib,
+        store=store,
+        notifier=notifier,
+        trade_notifier=trade_notifier,
+        watcher=watcher,
+    )
     try:
         client.run(config.discord.bot_token)
     finally:

@@ -1,7 +1,7 @@
 from datetime import date
 
 import pytest
-from ib_async import Option, Order, OrderStatus, Trade
+from conftest import FakeIB, FakeNotifier
 
 from bot.execution import handle_event
 from bot.models import (
@@ -12,66 +12,11 @@ from bot.models import (
     OptionKey,
     SoldAllEvent,
     TrimEvent,
+    TrimTarget,
     UnderlyingKey,
     UnknownEvent,
 )
-from bot.position_store import PositionStore
 from config.settings import RiskConfig
-
-
-class FakeIB:
-    """Records qualifyContracts/placeOrder calls; scripted to return a
-    Trade already in a chosen terminal state (or "Submitted" to simulate a
-    fill that never confirms), so handle_event's branching is testable
-    without any real network or event-loop I/O."""
-
-    def __init__(self, fill_status: str = "Filled", avg_fill_price: float = 1.0, qualify_ok: bool = True):
-        self.placed_orders: list[tuple[Option, Order]] = []
-        self._fill_status = fill_status
-        self._avg_fill_price = avg_fill_price
-        self._qualify_ok = qualify_ok
-        self._next_order_id = 1
-
-    def qualifyContracts(self, contract: Option) -> list[Option]:
-        if not self._qualify_ok:
-            return []
-        contract.conId = 99999
-        return [contract]
-
-    def placeOrder(self, contract: Option, order: Order) -> Trade:
-        order.orderId = self._next_order_id
-        self._next_order_id += 1
-        self.placed_orders.append((contract, order))
-        status = OrderStatus(status=self._fill_status, avgFillPrice=self._avg_fill_price)
-        return Trade(contract=contract, order=order, orderStatus=status)
-
-    def sleep(self, secs: float = 0.02) -> bool:
-        return True
-
-
-class FakeNotifier:
-    def __init__(self):
-        self.alerts: list[str] = []
-
-    def alert(self, message: str) -> None:
-        self.alerts.append(message)
-
-
-@pytest.fixture
-def store(tmp_path):
-    s = PositionStore(tmp_path / "positions.sqlite3")
-    yield s
-    s.close()
-
-
-@pytest.fixture
-def notifier():
-    return FakeNotifier()
-
-
-@pytest.fixture
-def risk():
-    return RiskConfig(max_usd_per_trade=1000.0)
 
 
 def _qqq_option() -> OptionKey:
@@ -80,7 +25,7 @@ def _qqq_option() -> OptionKey:
 
 def _seeded_position(store, *, channel_total=20, channel_remaining=20, user_total=4, user_remaining=4):
     option = _qqq_option()
-    store.create_open(
+    _seeded_position.last_id = store.create_open(
         OpenPosition(
             option=option,
             channel_total_qty=channel_total,
@@ -105,10 +50,9 @@ def test_buy_event_sizes_off_risk_cap_not_channel_contracts(store, notifier, ris
 
     expected_contracts = int(1000.0 // (1.215 * 100))  # compute_contracts, not event.contracts (999)
     assert expected_contracts != 999
-    assert len(ib.placed_orders) == 1
-    _, order = ib.placed_orders[0]
-    assert order.action == "BUY"
-    assert order.totalQuantity == expected_contracts
+    buys = ib.orders_of("BUY")
+    assert len(buys) == 1
+    assert buys[0].totalQuantity == expected_contracts
 
     position = store.get_open(_qqq_option())
     assert position is not None
@@ -156,7 +100,9 @@ def test_buy_event_timeout_does_not_open_position(store, notifier, risk):
 # --- TrimEvent ------------------------------------------------------------
 
 
-def test_trim_event_mirrors_channel_rate(store, notifier):
+def test_trim_event_places_no_orders_and_leaves_our_size_alone(store, notifier):
+    """Our own targets are already resting at IBKR, so mirroring the
+    channel's trim here would sell on top of them."""
     ib = FakeIB(fill_status="Filled", avg_fill_price=1.328)
     _seeded_position(store, channel_total=20, channel_remaining=20, user_total=4, user_remaining=4)
     event = TrimEvent(
@@ -172,19 +118,12 @@ def test_trim_event_mirrors_channel_rate(store, notifier):
     trade_notifier = FakeNotifier()
     handle_event(event, ib, store, notifier, RiskConfig(max_usd_per_trade=1000.0), trade_notifier=trade_notifier)
 
-    assert len(ib.placed_orders) == 1
-    _, order = ib.placed_orders[0]
-    assert order.action == "SELL"
-    assert order.totalQuantity == 2  # floor(4 * 12 / 20)
-
+    assert ib.placed_orders == []
     position = store.get_open(_qqq_option())
-    assert position.user_remaining_qty == 2
-    assert position.channel_remaining_qty == 8
+    assert position.user_remaining_qty == 4  # untouched
+    assert position.channel_remaining_qty == 8  # channel bookkeeping still current
     assert store.already_processed(5) is True
     assert notifier.alerts == []
-    assert len(trade_notifier.alerts) == 1
-    assert "TRIMMED 2x" in trade_notifier.alerts[0]
-    assert "2 remaining" in trade_notifier.alerts[0]
 
 
 def test_trim_event_zero_qty_still_updates_channel_bookkeeping_no_order(store, notifier):
@@ -210,7 +149,7 @@ def test_trim_event_zero_qty_still_updates_channel_bookkeeping_no_order(store, n
     assert store.already_processed(6) is True
 
 
-def test_trim_event_no_matching_position_alerts_and_marks_processed(store, notifier):
+def test_trim_event_no_matching_position_is_not_an_alert(store, notifier):
     ib = FakeIB()
     event = TrimEvent(
         message_id=7,
@@ -224,8 +163,10 @@ def test_trim_event_no_matching_position_alerts_and_marks_processed(store, notif
 
     handle_event(event, ib, store, notifier, RiskConfig(max_usd_per_trade=1000.0))
 
+    # Our own stop or targets may well have closed the position before the
+    # channel got around to trimming it -- normal, not worth an alert.
     assert ib.placed_orders == []
-    assert len(notifier.alerts) == 1
+    assert notifier.alerts == []
     assert store.already_processed(7) is True
 
 
@@ -346,7 +287,181 @@ def test_second_call_with_same_message_id_is_a_no_op(store, notifier, risk):
     event = BuyEvent(message_id=15, option=_qqq_option(), entry_price=1.0, contracts=10, cost=1000.0)
 
     handle_event(event, ib, store, notifier, risk)
-    assert len(ib.placed_orders) == 1
+    first_pass = len(ib.placed_orders)
+    assert len(ib.orders_of("BUY")) == 1
 
     handle_event(event, ib, store, notifier, risk)
-    assert len(ib.placed_orders) == 1
+    assert len(ib.placed_orders) == first_pass  # no second entry, no duplicate brackets
+    assert len(ib.orders_of("BUY")) == 1
+
+
+# --- the exit structure placed at entry -----------------------------------
+
+
+def _spy_option() -> OptionKey:
+    return OptionKey("SPY", date(2026, 9, 30), 764.0, "C")
+
+
+def _spy_buy(message_id: int = 100, contracts: int = 25) -> BuyEvent:
+    """The SPY 764C card from the live desk, ladder included."""
+    return BuyEvent(
+        message_id=message_id,
+        option=_spy_option(),
+        entry_price=1.905,
+        contracts=contracts,
+        cost=4763.0,
+        trim_targets=(
+            TrimTarget(0.25, 2.381),
+            TrimTarget(0.50, 2.858),
+            TrimTarget(0.75, 3.334),
+            TrimTarget(1.00, 3.810),
+        ),
+    )
+
+
+def test_buy_rests_a_limit_and_a_stop_for_every_tranche(store, notifier):
+    # $1000 cap / $190.50 per contract = 5 contracts -> 2/1/1/1 across the targets.
+    risk = RiskConfig(max_usd_per_trade=1000.0, stop_loss_pct=0.30)
+    ib = FakeIB(fill_status="Filled", avg_fill_price=1.905)
+
+    handle_event(_spy_buy(), ib, store, notifier, risk)
+
+    limits = ib.orders_of("SELL", "LMT")
+    stops = ib.orders_of("SELL", "STP")
+    assert [(o.totalQuantity, o.lmtPrice) for o in limits] == [(2, 2.38), (1, 2.86), (1, 3.33), (1, 3.81)]
+    assert [(o.totalQuantity, o.auxPrice) for o in stops] == [(2, 1.33), (1, 1.33), (1, 1.33), (1, 1.33)]
+    assert notifier.alerts == []
+
+
+def test_each_limit_is_oca_paired_with_exactly_one_stop(store, notifier):
+    """A filled target must take its own stop off the book and nothing
+    else -- that is what keeps every tranche quantity immutable."""
+    risk = RiskConfig(max_usd_per_trade=1000.0)
+    ib = FakeIB(fill_status="Filled", avg_fill_price=1.905)
+
+    handle_event(_spy_buy(), ib, store, notifier, risk)
+
+    groups = {}
+    for order in ib.orders_of("SELL"):
+        groups.setdefault(order.ocaGroup, []).append(order.orderType)
+    assert all(sorted(types) == ["LMT", "STP"] for types in groups.values())
+    assert all(o.ocaType == 1 for o in ib.orders_of("SELL"))  # cancel-all
+
+
+def test_exit_orders_outlive_the_session_that_placed_them(store, notifier):
+    """A DAY bracket is purged at the close, which would leave an
+    overnight position unprotected the next morning."""
+    ib = FakeIB(fill_status="Filled", avg_fill_price=1.905)
+
+    handle_event(_spy_buy(), ib, store, notifier, RiskConfig(max_usd_per_trade=10_000.0))
+
+    assert all(o.tif == "GTC" for o in ib.orders_of("SELL"))
+
+
+def test_a_single_contract_gets_a_stop_and_no_limit(store, notifier):
+    # $200 cap / $1.905 -> 1 contract, so it rides as a runner.
+    ib = FakeIB(fill_status="Filled", avg_fill_price=1.905)
+
+    handle_event(_spy_buy(), ib, store, notifier, RiskConfig(max_usd_per_trade=200.0))
+
+    assert ib.orders_of("SELL", "LMT") == []
+    assert [o.totalQuantity for o in ib.orders_of("SELL", "STP")] == [1]
+    position = store.get_open(_spy_option())
+    assert position.runner_qty == 1
+
+
+def test_two_contracts_rest_one_target_and_hold_one_runner(store, notifier):
+    ib = FakeIB(fill_status="Filled", avg_fill_price=1.905)
+
+    handle_event(_spy_buy(), ib, store, notifier, RiskConfig(max_usd_per_trade=400.0))
+
+    assert [(o.totalQuantity, o.lmtPrice) for o in ib.orders_of("SELL", "LMT")] == [(1, 2.38)]
+    assert [o.totalQuantity for o in ib.orders_of("SELL", "STP")] == [1, 1]
+    assert store.get_open(_spy_option()).runner_qty == 1
+
+
+def test_the_ladder_is_rebased_on_our_own_fill_not_the_channels_entry(store, notifier):
+    """We get our own fill price on a market order. Keeping the channel's
+    percentages but re-pricing off our fill makes "+25%" mean +25% for us."""
+    ib = FakeIB(fill_status="Filled", avg_fill_price=2.000)  # we paid more than the card's 1.905
+
+    handle_event(_spy_buy(), ib, store, notifier, RiskConfig(max_usd_per_trade=10_000.0))
+
+    limits = sorted(o.lmtPrice for o in ib.orders_of("SELL", "LMT"))
+    assert limits == [2.50, 3.00, 3.50, 4.00]  # 2.00 * 1.25 / 1.5 / 1.75 / 2.0
+
+
+def test_buy_with_no_published_ladder_is_still_bracketed(store, notifier):
+    event = BuyEvent(message_id=101, option=_spy_option(), entry_price=2.0, contracts=10, cost=2000.0)
+    ib = FakeIB(fill_status="Filled", avg_fill_price=2.0)
+
+    handle_event(event, ib, store, notifier, RiskConfig(max_usd_per_trade=10_000.0))
+
+    assert len(ib.orders_of("SELL", "LMT")) == 4
+    assert ib.orders_of("SELL", "STP")
+    assert notifier.alerts == []
+
+
+def test_the_ladder_is_persisted_for_a_later_restart(store, notifier):
+    ib = FakeIB(fill_status="Filled", avg_fill_price=1.905)
+
+    handle_event(_spy_buy(), ib, store, notifier, RiskConfig(max_usd_per_trade=200.0))
+
+    # A 1-contract runner has no limit orders to read rungs off, so the
+    # ladder has to come back from the DB after a restart.
+    position = store.get_open(_spy_option())
+    assert [t.pct for t in position.trim_targets] == [0.25, 0.50, 0.75, 1.00]
+    assert position.current_stop_price == 1.33
+    assert position.stop_tier_index == -1
+
+
+def test_a_bracket_failure_after_a_fill_raises_a_loud_alert(store, notifier, monkeypatch):
+    import bot.execution as execution
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("IBKR said no")
+
+    monkeypatch.setattr(execution, "place_exit_structure", boom)
+    ib = FakeIB(fill_status="Filled", avg_fill_price=1.905)
+
+    handle_event(_spy_buy(), ib, store, notifier, RiskConfig(max_usd_per_trade=10_000.0))
+
+    assert store.get_open(_spy_option()) is not None  # we do hold the contracts
+    assert len(notifier.alerts) == 1
+    assert "UNPROTECTED" in notifier.alerts[0]
+
+
+def test_sold_all_cancels_the_resting_brackets_before_selling(store, notifier):
+    risk = RiskConfig(max_usd_per_trade=1000.0)  # 5 contracts
+    ib = FakeIB(fill_status="Filled", avg_fill_price=1.905)
+    handle_event(_spy_buy(), ib, store, notifier, risk)
+    resting = {o.orderId for o in ib.orders_of("SELL")}
+
+    sold_all = SoldAllEvent(
+        message_id=102,
+        underlying=UnderlyingKey("SPY", 764.0, "C"),
+        realized_pct=0.30,
+        avg_exit_price=2.5,
+    )
+    handle_event(sold_all, ib, store, notifier, risk)
+
+    assert resting.issubset(set(ib.cancelled_order_ids)), "every bracket leg must come off the book"
+    # The flattening market order is the last thing placed, after the cancels.
+    final = ib.placed_orders[-1][1]
+    assert (final.action, final.orderType, final.totalQuantity) == ("SELL", "MKT", 5)
+    assert store.get_open(_spy_option()) is None
+
+
+def test_expired_cancels_the_brackets_without_placing_an_order(store, notifier):
+    risk = RiskConfig(max_usd_per_trade=10_000.0)
+    ib = FakeIB(fill_status="Filled", avg_fill_price=1.905)
+    handle_event(_spy_buy(), ib, store, notifier, risk)
+    resting = {o.orderId for o in ib.orders_of("SELL")}
+    placed_before = len(ib.placed_orders)
+
+    expired = ExpiredEvent(message_id=103, underlying=UnderlyingKey("SPY", 764.0, "C"), won=True)
+    handle_event(expired, ib, store, notifier, risk)
+
+    assert resting.issubset(set(ib.cancelled_order_ids))
+    assert len(ib.placed_orders) == placed_before  # the market is closed
+    assert store.get_open(_spy_option()) is None

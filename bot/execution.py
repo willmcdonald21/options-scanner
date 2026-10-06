@@ -7,6 +7,7 @@ from typing import Literal
 from ib_async import IB, MarketOrder, Option, Trade
 
 from bot.contracts import resolve_contract
+from bot.exit_plan import build_exit_plan, default_targets
 from bot.models import (
     BuyEvent,
     ExpiredEvent,
@@ -18,9 +19,9 @@ from bot.models import (
     UnknownEvent,
 )
 from bot.notifier import Notifier
+from bot.orders import cancel_all_legs_for_position, place_exit_structure
 from bot.position_store import PositionStore
 from bot.sizing import compute_contracts
-from bot.trim_sizing import compute_trim_sell_qty
 from config.settings import RiskConfig
 
 logger = logging.getLogger("options_scanner.execution")
@@ -55,7 +56,7 @@ def handle_event(
         elif isinstance(event, SoldAllEvent):
             _handle_sold_all(event, ib, store, notifier, fill_timeout_s, trade_notifier)
         elif isinstance(event, ExpiredEvent):
-            _handle_expired(event, store, notifier)
+            _handle_expired(event, ib, store, notifier)
         elif isinstance(event, InfoEvent):
             _handle_info(event, store)
         elif isinstance(event, UnknownEvent):
@@ -119,7 +120,17 @@ def _handle_buy(
 
     if outcome == "FILLED":
         fill_price = trade.orderStatus.avgFillPrice or event.entry_price
-        store.create_open(
+        # The channel's published ladder is relative to *its* entry; ours
+        # is relative to the fill we actually got, which can differ by a
+        # few cents on a market order. Keep the channel's percentages and
+        # re-base the prices on our fill so the rungs mean what they say.
+        targets = (
+            default_targets(fill_price, tuple(t.pct for t in event.trim_targets))
+            if event.trim_targets
+            else default_targets(fill_price)
+        )
+        plan = build_exit_plan(fill_price, contracts, targets, risk.stop_loss_pct)
+        position_id = store.create_open(
             OpenPosition(
                 option=event.option,
                 channel_total_qty=event.contracts,
@@ -128,8 +139,34 @@ def _handle_buy(
                 user_remaining_qty=contracts,
                 entry_price=fill_price,
                 ibkr_order_id_entry=trade.order.orderId,
+                current_stop_price=plan.initial_stop,
+                stop_tier_index=-1,
+                runner_qty=plan.runner_qty,
+                trim_targets=targets,
             )
         )
+        try:
+            place_exit_structure(ib, store, qualified[0], position_id, plan, risk)
+        except Exception as exc:
+            # The entry filled but the brackets didn't -- an unprotected
+            # position is the one state that always needs a human.
+            logger.exception("Failed to place exit structure for %s", event.option)
+            notifier.alert(
+                f"FILLED {contracts}x {event.option} but could NOT place exit orders: {exc}. "
+                "Position is UNPROTECTED -- set a stop manually."
+            )
+        else:
+            rungs = ", ".join(
+                f"t{t.tier_index}:{t.qty}x@{t.tp_price:.2f}" if t.tp_price is not None else f"t{t.tier_index}:{t.qty}x runner"
+                for t in plan.tranches
+            )
+            logger.info(
+                "Bracketed %s: %s contracts, stop %.2f, tranches [%s]",
+                event.option,
+                contracts,
+                plan.initial_stop,
+                rungs,
+            )
     else:
         reason = "was rejected" if outcome == "REJECTED" else f"did not confirm fill within {fill_timeout_s}s"
         notifier.alert(f"BUY order for {event.option} {reason} (message {event.message_id})")
@@ -145,6 +182,16 @@ def _handle_trim(
     fill_timeout_s: float,
     trade_notifier: Notifier | None = None,
 ) -> None:
+    """Read-only. Our own trim targets are already resting at IBKR from the
+    entry (see _handle_buy), so mirroring the channel's trim here would
+    sell a second time on top of a limit order that has either already
+    filled or is about to. All this does is keep the channel's own
+    remaining count current, for context in later messages.
+
+    ib and fill_timeout_s are unused, kept so every handler shares one
+    signature and reinstating reactive trims stays a one-function change
+    (bot/trim_sizing.py still holds the proportional-sizing logic).
+    """
     try:
         position = store.get_open_by_underlying(event.underlying)
     except ValueError as exc:
@@ -152,64 +199,32 @@ def _handle_trim(
         return  # not marked processed -- a fixed DB should let this retry
 
     if position is None:
-        notifier.alert(f"TRIM for {event.underlying} but no open position found (message {event.message_id})")
-        store.mark_processed(event.message_id)
-        return
-
-    sell_qty = compute_trim_sell_qty(
-        position.user_remaining_qty, event.sold_this_event, event.channel_total_before, event.channel_remaining_after
-    )
-
-    if sell_qty == 0:
-        # Expected outcome of proportional flooring, not an error -- still
-        # persist the channel's new remaining qty so the *next* trim's
-        # proportion is checked against the right baseline.
-        store.apply_trim(
-            position.option,
-            channel_remaining_qty=event.channel_remaining_after,
-            user_remaining_qty=position.user_remaining_qty,
+        # Not an error worth alerting on any more: our own stop or targets
+        # may well have closed this position before the channel trimmed it.
+        logger.info(
+            "TRIM +%.0f%% for %s noted; no open position on our side (message %s)",
+            event.tier_pct * 100,
+            event.underlying,
+            event.message_id,
         )
         store.mark_processed(event.message_id)
         return
 
-    contract = resolve_contract(position.option)
-    qualified = ib.qualifyContracts(contract)
-    if not qualified or not qualified[0].conId:
-        notifier.alert(f"Could not qualify contract for {position.option} (message {event.message_id})")
-        store.mark_processed(event.message_id)
-        return
-
-    trade, outcome = _place_market_order_and_confirm(ib, qualified[0], "SELL", sell_qty, fill_timeout_s)
-    store.record_order(
-        message_id=event.message_id,
-        option=position.option,
-        ib_order_id=trade.order.orderId,
-        action="SELL",
-        contracts=sell_qty,
-        status=outcome,
-        avg_fill_price=trade.orderStatus.avgFillPrice or None,
+    store.apply_trim(
+        position.option,
+        channel_remaining_qty=event.channel_remaining_after,
+        user_remaining_qty=position.user_remaining_qty,  # unchanged -- we placed no order
     )
-
-    if outcome == "FILLED":
-        new_remaining = position.user_remaining_qty - sell_qty
-        store.apply_trim(
-            position.option,
-            channel_remaining_qty=event.channel_remaining_after,
-            user_remaining_qty=new_remaining,
-        )
-        if trade_notifier is not None:
-            fill_price = trade.orderStatus.avgFillPrice or 0.0
-            trade_notifier.alert(
-                f"TRIMMED {sell_qty}x {position.option} @ ${fill_price:.2f} "
-                f"(tier +{event.tier_pct * 100:.0f}%) -- {new_remaining} remaining"
-            )
-    else:
-        # The user's real position didn't change -- local bookkeeping must
-        # not claim it did. Next trim's baseline may be slightly stale
-        # until a human reconciles; accepted limitation, see plan.
-        reason = "was rejected" if outcome == "REJECTED" else f"did not confirm fill within {fill_timeout_s}s"
-        notifier.alert(f"TRIM SELL order for {position.option} {reason} (message {event.message_id})")
-
+    logger.info(
+        "TRIM +%.0f%% for %s noted (channel %s -> %s remaining); our own %s contracts are "
+        "managed by resting orders, stop at %s",
+        event.tier_pct * 100,
+        position.option,
+        event.channel_total_before,
+        event.channel_remaining_after,
+        position.user_remaining_qty,
+        f"${position.current_stop_price:.2f}" if position.current_stop_price else "unset",
+    )
     store.mark_processed(event.message_id)
 
 
@@ -232,10 +247,19 @@ def _handle_sold_all(
         store.mark_processed(event.message_id)
         return
 
+    # Cancel first, always. Selling while our own limits and stops are
+    # still working would either double-sell (a target filling alongside
+    # the market order) or leave orphan orders resting against a flat
+    # position, which at IBKR means going short if one later triggers.
+    if position.id is not None:
+        cancelled = cancel_all_legs_for_position(ib, store, position.id)
+        if cancelled:
+            logger.info("Cancelled %s resting exit order(s) for %s before flattening", cancelled, position.option)
+
     if position.user_remaining_qty <= 0:
-        # Already flat locally (e.g. a prior TRIM zeroed it out) -- just
-        # confirm the close, no order, no alert needed.
+        # Already flat locally -- our own stop or targets got there first.
         store.close_position(position.option)
+        logger.info("SOLD ALL for %s: already flat on our side, nothing to sell", position.option)
         store.mark_processed(event.message_id)
         return
 
@@ -273,7 +297,7 @@ def _handle_sold_all(
     store.mark_processed(event.message_id)
 
 
-def _handle_expired(event: ExpiredEvent, store: PositionStore, notifier: Notifier) -> None:
+def _handle_expired(event: ExpiredEvent, ib: IB, store: PositionStore, notifier: Notifier) -> None:
     try:
         position = store.get_open_by_underlying(event.underlying)
     except ValueError as exc:
@@ -283,7 +307,12 @@ def _handle_expired(event: ExpiredEvent, store: PositionStore, notifier: Notifie
     if position is None:
         notifier.alert(f"EXPIRED for {event.underlying} but no open position found (message {event.message_id})")
     else:
-        store.close_position(position.option)  # never an order -- the market's closed
+        # Never an order -- the market's closed. The resting brackets still
+        # need taking off the book: a GTC stop on an expired contract would
+        # otherwise linger at IBKR.
+        if position.id is not None:
+            cancel_all_legs_for_position(ib, store, position.id)
+        store.close_position(position.option)
 
     store.mark_processed(event.message_id)
 
