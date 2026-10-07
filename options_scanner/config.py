@@ -183,9 +183,19 @@ class BrokerSettings(BaseModel):
     port: int = Field(default=4002, gt=0)
 
     # Must differ from every other client on this Gateway. 11 belongs to
-    # warrior_bot, which shares this paper account.
+    # warrior_bot.
     client_id: int = Field(default=12, ge=0)
     market_data_type: int = Field(default=1, ge=1, le=4)
+
+    # The IBKR account this bot trades, e.g. "DU1234567". Blank means "whatever
+    # the login manages", which is correct while the login holds exactly one
+    # account and is what IBKR itself assumes.
+    #
+    # Once a second account is linked under the same username this must be set.
+    # IBKR rejects any order that does not name an account when more than one is
+    # managed, and an unscoped position read would return the other bot's
+    # holdings -- which feeds straight into the sell clamp.
+    account: str = ""
 
     # IBKR's documented live ports. Guarded against regardless of mode so a
     # paper run can never reach a live account by a one-character typo.

@@ -65,6 +65,17 @@ broker:
   client_id: 12     # must be unique per client; warrior_bot holds 11
   market_data_type: 1
 
+  # The IBKR account this bot trades, e.g. "DU1234567".
+  #
+  # Blank is correct while the login manages exactly one account. Once a second
+  # account is linked under the same username this MUST be set, for two
+  # reasons: IBKR rejects any order that does not name an account when more
+  # than one is managed, and an unscoped position read would return the other
+  # bot's holdings, which feed straight into the sell clamp.
+  #
+  # Find it with: .venv/bin/python scripts/ib_probe.py
+  account: ""
+
 storage:
   db_path: data/options_scanner.sqlite3
 
