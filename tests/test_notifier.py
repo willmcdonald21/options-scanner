@@ -6,6 +6,9 @@ Discord connection; only `to_embed` touches discord.py.
 
 import pytest
 
+from datetime import date
+
+from options_scanner.models import OptionKey
 from options_scanner.notifier import (
     COLOR_GREEN,
     COLOR_RED,
@@ -33,6 +36,8 @@ from options_scanner.notifier import (
 )
 
 JUMP = "https://discord.com/channels/1/2/3"
+OPT = OptionKey("SPX", date(2026, 10, 6), 7815.0, "P")
+TODAY = date(2026, 10, 6)
 
 
 # --- severity, colour and pings ------------------------------------------
@@ -77,8 +82,8 @@ def test_the_things_that_need_a_human_now_all_ping(builder):
 
 def test_routine_good_news_does_not_ping():
     note = trim_executed(
-        occ_symbol="X", level_pct=25, qty=6, fill_price=0.60, remaining=15, realized=360.0,
-        jump_url=JUMP,
+        option=OPT, level_pct=25, qty=6, fill_price=0.60, entry_price=0.48, remaining=15,
+        original_qty=21, realized=72.0, jump_url=JUMP, today=TODAY,
     )
     assert note.level is Level.SUCCESS
     assert note.mentions_owner is False
@@ -86,12 +91,12 @@ def test_routine_good_news_does_not_ping():
 
 def test_a_losing_stop_out_is_red_and_a_winning_one_is_green():
     losing = stopped_out(
-        occ_symbol="X", qty=8, stop_price=0.48, fill_price=0.47, realized=-50.0, pnl_pct=-5.0,
-        jump_url=JUMP,
+        option=OPT, qty=8, stop_price=0.48, fill_price=0.47, entry_price=0.48,
+        realized=-50.0, pnl_pct=-5.0, jump_url=JUMP, today=TODAY,
     )
     winning = stopped_out(
-        occ_symbol="X", qty=8, stop_price=1.09, fill_price=1.08, realized=500.0, pnl_pct=120.0,
-        jump_url=JUMP,
+        option=OPT, qty=8, stop_price=1.09, fill_price=1.08, entry_price=0.48,
+        realized=500.0, pnl_pct=120.0, jump_url=JUMP, today=TODAY,
     )
     assert losing.level is Level.ERROR
     assert winning.level is Level.SUCCESS
@@ -147,27 +152,28 @@ def test_to_text_is_loggable_and_carries_the_fields():
 
 def test_the_parsed_alert_distinguishes_our_size_from_the_advisors():
     note = alert_parsed(
+        option=OPT,
         occ_symbol="SPXW  261006P07815000",
-        description="SPX 7815P",
         entry_price=0.475,
         advisor_contracts=25,
         our_contracts=21,
         cost=997.5,
         jump_url=JUMP,
         levels=[(25, 0.59375), (50, 0.7125), (75, 0.83125)],
+        today=TODAY,
     )
     values = {name: value for name, value, _ in note.fields}
 
     assert values["Advisor size"] == "25 contracts"
     assert values["Our size"].startswith("21 contracts")
-    assert values["Trim ladder"].count("\n") == 2
+    assert values["Trim Targets"].count("\n") == 2
 
 
 def test_stop_moved_explains_why_in_words():
-    breakeven = stop_moved(occ_symbol="X", old=None, new=0.48, reason="breakeven", jump_url=JUMP)
-    trail = stop_moved(occ_symbol="X", old=0.48, new=0.62, reason="trail", jump_url=JUMP)
+    breakeven = stop_moved(option=OPT, old=None, new=0.48, reason="breakeven", jump_url=JUMP, today=TODAY)
+    trail = stop_moved(option=OPT, old=0.48, new=0.62, reason="trail", jump_url=JUMP, today=TODAY)
 
-    assert "can no longer lose money" in breakeven.description
+    assert "break-even" in breakeven.description
     assert "ratcheted" in trail.description
     values = {name: value for name, value, _ in breakeven.fields}
     assert values["Stop"] == "none → $0.48"
@@ -220,7 +226,7 @@ def test_sub_dollar_prices_keep_their_third_decimal(value, expected):
 
 def test_money_and_percent_formatting():
     assert money(1234.5) == "$1,234.50"
-    assert money(-50.0) == "$-50.00"
+    assert money(-50.0) == "-$50.00"  # sign before the symbol
     assert signed_pct(12.34) == "+12.3%"
     assert signed_pct(-5.0) == "-5.0%"
 

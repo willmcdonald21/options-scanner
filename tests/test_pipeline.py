@@ -37,14 +37,14 @@ async def test_a_valid_alert_is_accepted_and_reported(pipeline, storage):
 
     assert result.final_reaction == REACTION_PLACED
     assert len(result.accepted) == 1
-    assert find(result, "Alert parsed")
-    assert find(result, "Would place entry order")
+    assert find(result, "PARSED")
+    assert find(result, "WOULD BUY")
 
 
 async def test_the_accepted_alert_is_sized_from_our_config_not_the_advisor(pipeline):
     result = await paste(pipeline)
 
-    note = find(result, "Alert parsed")
+    note = find(result, "PARSED")
     values = {name: value for name, value, _ in note.fields}
     assert values["Advisor size"] == "25 contracts"
     # $1000 cap / $47.50 per contract = 21, nothing to do with the advisor's 25.
@@ -54,7 +54,7 @@ async def test_the_accepted_alert_is_sized_from_our_config_not_the_advisor(pipel
 async def test_the_dry_run_order_is_a_limit_with_a_walk_cap(pipeline):
     result = await paste(pipeline)
 
-    note = find(result, "Would place entry")
+    note = find(result, "WOULD BUY")
     values = {name: value for name, value, _ in note.fields}
     assert values["Order"] == "BUY 21 @ limit $0.475"
     assert values["Walk to"] == "$0.523 max"  # +10% of 0.475
@@ -65,12 +65,13 @@ async def test_the_dry_run_order_is_a_limit_with_a_walk_cap(pipeline):
 async def test_the_reported_ladder_uses_our_rungs_not_the_cards(pipeline):
     result = await paste(pipeline)
 
-    note = find(result, "Alert parsed")
-    ladder = {name: value for name, value, _ in note.fields}["Trim ladder"]
-    # Three selling rungs; +100% is a no-trim rung and must not be listed.
+    note = find(result, "PARSED")
+    ladder = {name: value for name, value, _ in note.fields}["Trim Targets"]
+    # Three selling rungs, in the advisor's own "25%   $0.594" shape.
+    # +100% is a no-trim rung and must not be listed.
     assert ladder.count("\n") == 2
-    assert "+25%" in ladder and "+75%" in ladder
-    assert "+100%" not in ladder
+    assert "25%" in ladder and "75%" in ladder
+    assert "100%" not in ladder
 
 
 async def test_an_accepted_alert_is_persisted_with_its_contract(pipeline, storage):
@@ -112,7 +113,7 @@ async def test_the_same_message_is_never_processed_twice(pipeline, storage):
 
     assert len(first.accepted) == 1
     assert second.accepted == []
-    assert find(second, "Duplicate alert")
+    assert find(second, "DUPLICATE")
     assert len(storage._conn.execute("SELECT * FROM orders").fetchall()) == 1
 
 
@@ -127,7 +128,7 @@ async def test_dedup_survives_a_restart(settings, storage, tmp_path):
     again = await paste(rebuilt, message_id=901)
 
     assert again.accepted == []
-    assert find(again, "Duplicate alert")
+    assert find(again, "DUPLICATE")
 
 
 async def test_a_repasted_alert_under_a_new_message_id_is_caught(pipeline, storage):
@@ -138,7 +139,7 @@ async def test_a_repasted_alert_under_a_new_message_id_is_caught(pipeline, stora
 
     assert again.accepted == []
     assert again.final_reaction == REACTION_SKIPPED
-    note = find(again, "skipped")
+    note = find(again, "SKIPPED")
     assert "already accepted as message 910" in note.description
     assert storage.get_alert(911)["status"] == STATUS_DUPLICATE
 
@@ -165,7 +166,7 @@ async def test_an_unreadable_paste_is_reported_not_ignored(pipeline, storage):
     result = await paste(pipeline, "anyone else get filled on that?", message_id=930)
 
     assert result.final_reaction == REACTION_REJECTED
-    note = find(result, "Could not read")
+    note = find(result, "UNREADABLE")
     assert note.level is Level.WARNING
     assert storage.get_alert(930)["status"] == STATUS_REJECTED
 
@@ -174,7 +175,7 @@ async def test_a_failed_validation_names_its_reason(pipeline, storage):
     result = await paste(pipeline, SPEC_ALERT.replace("$0.475", "$0.485"), message_id=940)
 
     assert result.final_reaction == REACTION_REJECTED
-    note = find(result, "rejected")
+    note = find(result, "REJECTED")
     assert "trim_target_mismatch" in note.to_text()
     assert "0.606" in note.description
     assert storage.get_alert(940)["status"] == STATUS_REJECTED
@@ -184,7 +185,7 @@ async def test_a_wrong_day_0dte_alert_is_rejected(pipeline):
     result = await paste(pipeline, trading_day=date(2026, 10, 5))
 
     assert result.final_reaction == REACTION_REJECTED
-    assert "expiry_tag_mismatch" in find(result, "rejected").to_text()
+    assert "expiry_tag_mismatch" in find(result, "REJECTED").to_text()
 
 
 async def test_a_rejected_alert_never_reaches_the_broker(pipeline, broker):
@@ -208,7 +209,7 @@ Not financial advice"""
     result = await paste(pipeline, card, message_id=950)
 
     assert result.final_reaction == REACTION_RECEIVED
-    assert find(result, "Informational")
+    assert find(result, "NOTED")
     assert storage.get_alert(950)["status"] == STATUS_INFO
     assert result.accepted == []
 
@@ -222,7 +223,7 @@ async def test_a_halted_bot_skips_entries_but_still_reports(pipeline, risk, stor
     result = await paste(pipeline, message_id=960)
 
     assert result.final_reaction == REACTION_SKIPPED
-    note = find(result, "risk gate")
+    note = find(result, "SKIPPED")
     assert "halted" in note.description
     assert "!resume" in note.description
     assert storage.get_alert(960)["status"] == STATUS_SKIPPED
@@ -232,14 +233,14 @@ async def test_an_alert_outside_market_hours_is_skipped(pipeline):
     result = await paste(pipeline, moment=datetime(2026, 10, 6, 8, 0, tzinfo=EASTERN))
 
     assert result.final_reaction == REACTION_SKIPPED
-    assert "market is closed" in find(result, "risk gate").description
+    assert "market is closed" in find(result, "SKIPPED").description
 
 
 async def test_an_alert_past_the_entry_cutoff_is_skipped(pipeline):
     result = await paste(pipeline, moment=datetime(2026, 10, 6, 15, 45, tzinfo=EASTERN))
 
     assert result.final_reaction == REACTION_SKIPPED
-    assert "cutoff" in find(result, "risk gate").description
+    assert "cutoff" in find(result, "SKIPPED").description
 
 
 async def test_the_daily_trade_cap_blocks_further_entries(settings, storage):
@@ -253,7 +254,7 @@ async def test_the_daily_trade_cap_blocks_further_entries(settings, storage):
 
     assert first.final_reaction == REACTION_PLACED
     assert second.final_reaction == REACTION_SKIPPED
-    assert "1 of 1 allowed trades" in find(second, "risk gate").description
+    assert "1 of 1 allowed trades" in find(second, "SKIPPED").description
 
 
 async def test_the_daily_loss_limit_blocks_entries(settings, storage):
@@ -266,7 +267,7 @@ async def test_the_daily_loss_limit_blocks_entries(settings, storage):
 
     assert result.final_reaction == REACTION_SKIPPED
     # Breaching the limit auto-halts, so that is the reason reported first.
-    assert "halted" in find(result, "risk gate").description
+    assert "halted" in find(result, "SKIPPED").description
     assert risk.halted
 
 
@@ -292,7 +293,7 @@ async def test_the_open_position_cap_blocks_further_entries(settings, storage):
     result = await paste(pipe)
 
     assert result.final_reaction == REACTION_SKIPPED
-    assert "position slots already in use" in find(result, "risk gate").description
+    assert "position slots already in use" in find(result, "SKIPPED").description
 
 
 # --- broker interaction ---------------------------------------------------
@@ -311,7 +312,7 @@ async def test_a_contract_missing_from_the_chain_is_rejected(settings, storage):
     result = await paste(pipe)
 
     assert result.final_reaction == REACTION_REJECTED
-    note = find(result, "rejected")
+    note = find(result, "REJECTED")
     assert "not found in the option chain" in note.description
     assert "SPXW" in note.description  # names the trading class it looked under
 
@@ -334,7 +335,7 @@ async def test_an_ask_already_above_the_slippage_cap_is_skipped(settings, storag
     result = await paste(pipe)
 
     assert result.final_reaction == REACTION_SKIPPED
-    note = find(result, "risk gate")
+    note = find(result, "SKIPPED")
     assert "not chasing" in note.description.lower()
     assert "ask_above_cap" in note.to_text()
 
@@ -382,8 +383,8 @@ Not financial advice"""
     result = await paste(pipeline, SPEC_ALERT + "\n" + info_card, message_id=1100)
 
     assert len(result.accepted) == 1
-    assert find(result, "Would place entry")
-    assert find(result, "Informational")
+    assert find(result, "WOULD BUY")
+    assert find(result, "NOTED")
     # Each card gets its own row, at message_id + index.
     assert storage.get_alert(1100)["status"] == STATUS_ACCEPTED
     assert storage.get_alert(1101)["status"] == STATUS_INFO
@@ -395,7 +396,7 @@ async def test_the_strongest_reaction_wins_for_a_mixed_paste(pipeline):
 
     # One accepted, one rejected -- the accepted entry is what matters most.
     assert result.final_reaction == REACTION_PLACED
-    assert find(result, "rejected")
+    assert find(result, "REJECTED")
 
 
 async def test_one_broken_card_does_not_stop_the_others(pipeline, monkeypatch):
@@ -452,7 +453,7 @@ async def test_paper_mode_with_no_broker_refuses_rather_than_pretending(settings
 async def test_dry_run_embeds_are_labelled_as_such(pipeline):
     result = await paste(pipeline)
 
-    note = find(result, "Would place entry")
+    note = find(result, "WOULD BUY")
     assert pipeline.dry_run is True
     # to_embed needs discord installed; the label logic is what matters here.
     assert note.to_embed(dry_run=True).title.startswith("[DRY RUN]")

@@ -16,8 +16,15 @@ Conventions, from the spec:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from enum import Enum
 from typing import Any
+
+from options_scanner.models import OptionKey
+
+_MONTH_NAMES = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
 
 # Discord embed colours.
 COLOR_GREEN = 0x2ECC71
@@ -96,6 +103,26 @@ class Notification:
             embed.set_footer(text=self.footer)
         return embed
 
+    def to_webhook_embed(self) -> dict:
+        """The same card as a raw Discord webhook payload. Webhooks take plain
+        JSON rather than a discord.Embed, so this is built by hand and the
+        module stays importable without discord.py."""
+        embed: dict = {"title": self.title, "color": self.level.color}
+        if self.description:
+            embed["description"] = self.description
+        fields = [
+            {"name": name, "value": value or "\u200b", "inline": inline}
+            for name, value, inline in self.fields
+        ]
+        if self.jump_url:
+            fields.append(
+                {"name": "Alert", "value": f"[jump to alert]({self.jump_url})", "inline": False}
+            )
+        if fields:
+            embed["fields"] = fields
+        embed["footer"] = {"text": self.footer or FOOTER}
+        return embed
+
     def to_text(self) -> str:
         """Plain-text rendering, for log lines and for tests."""
         parts = [f"[{self.level.value.upper()}] {self.title}"]
@@ -111,8 +138,44 @@ class Notification:
 # is enumerable in one place and each is individually testable.
 
 
+# Mirrors the advisor's own card footer, so our cards read as the same kind of
+# object while still being obviously ours.
+FOOTER = "options-scanner · real trade via IBKR · not financial advice"
+
+
+def contract_label(option: OptionKey, today: date | None = None) -> str:
+    """The advisor's title shorthand: "SPX 7815P · 0DTE", or "· Oct 9" when it
+    is not expiring today. Uses the underlying ticker, not the trading class --
+    the advisor writes SPX even though the contract trades as SPXW."""
+    if today is None:
+        from options_scanner.market_hours import today_et
+
+        today = today_et()
+    strike = f"{option.strike:g}"
+    tag = "0DTE" if option.expiry == today else f"{_MONTH_NAMES[option.expiry.month - 1]} {option.expiry.day}"
+    return f"{option.ticker} {strike}{option.right} · {tag}"
+
+
+def contract_sentence(option: OptionKey, verb: str = "Entered") -> str:
+    """The advisor's description line: "Entered SPX Oct06 '26 7815 Put"."""
+    month = _MONTH_NAMES[option.expiry.month - 1]
+    right = "Call" if option.right == "C" else "Put"
+    return (
+        f"{verb} {option.ticker} {month}{option.expiry.day:02d} "
+        f"'{option.expiry:%y} {option.strike:g} {right}"
+    )
+
+
+def ladder_block(levels: list[tuple[int, float]]) -> str:
+    """The advisor's ladder rows, with the percentages column-aligned the same
+    way: "25%   $0.594" / "100%  $0.950"."""
+    return "\n".join(f"{str(level) + '%':<6}{price(p)}" for level, p in levels)
+
+
 def money(value: float) -> str:
-    return f"${value:,.2f}"
+    """Sign before the currency symbol: "-$72.00", not "$-72.00"."""
+    sign = "-" if value < 0 else ""
+    return f"{sign}${abs(value):,.2f}"
 
 
 def price(value: float) -> str:
@@ -136,36 +199,39 @@ def signed_pct(value: float) -> str:
 
 def alert_parsed(
     *,
+    option: OptionKey,
     occ_symbol: str,
-    description: str,
     entry_price: float,
     advisor_contracts: int,
     our_contracts: int,
     cost: float,
     jump_url: str | None,
     levels: list[tuple[int, float]],
+    today: date | None = None,
 ) -> Notification:
+    """What we read off the card, before anything is ordered."""
     note = Notification(
-        title=f"Alert parsed — {description}",
+        title=f"PARSED — {contract_label(option, today)}",
         level=Level.INFO,
+        description=contract_sentence(option),
         jump_url=jump_url,
     )
-    note.add("Contract", f"`{occ_symbol}`", inline=False)
     note.add("Advisor entry", price(entry_price))
     note.add("Advisor size", f"{advisor_contracts} contracts")
-    note.add("Our size", f"{our_contracts} contracts ≈ {money(cost)}")
+    note.add("Our size", f"{our_contracts} contracts · {money(cost)}")
     if levels:
-        note.add(
-            "Trim ladder",
-            "\n".join(f"+{lvl}% → {price(p)}" for lvl, p in levels),
-            inline=False,
-        )
+        note.add("Trim Targets", ladder_block(levels), inline=False)
+    note.add("Contract", f"`{occ_symbol}`", inline=False)
     return note
 
 
-def alert_rejected(*, reason: str, detail: str, raw_title: str, jump_url: str | None) -> Notification:
+def alert_rejected(
+    *, reason: str, detail: str, raw_title: str, jump_url: str | None,
+    option: OptionKey | None = None, today: date | None = None,
+) -> Notification:
+    suffix = f" — {contract_label(option, today)}" if option else ""
     note = Notification(
-        title="Alert rejected — not traded",
+        title=f"REJECTED{suffix}",
         level=Level.WARNING,
         description=detail,
         jump_url=jump_url,
@@ -176,9 +242,13 @@ def alert_rejected(*, reason: str, detail: str, raw_title: str, jump_url: str | 
     return note
 
 
-def alert_skipped(*, reason: str, detail: str, jump_url: str | None) -> Notification:
+def alert_skipped(
+    *, reason: str, detail: str, jump_url: str | None,
+    option: OptionKey | None = None, today: date | None = None,
+) -> Notification:
+    suffix = f" — {contract_label(option, today)}" if option else ""
     note = Notification(
-        title="Alert skipped — risk gate",
+        title=f"SKIPPED{suffix}",
         level=Level.WARNING,
         description=detail,
         jump_url=jump_url,
@@ -189,7 +259,7 @@ def alert_skipped(*, reason: str, detail: str, jump_url: str | None) -> Notifica
 
 def alert_duplicate(*, detail: str, jump_url: str | None) -> Notification:
     return Notification(
-        title="Duplicate alert ignored",
+        title="DUPLICATE — ignored",
         level=Level.INFO,
         description=detail,
         jump_url=jump_url,
@@ -198,7 +268,7 @@ def alert_duplicate(*, detail: str, jump_url: str | None) -> Notification:
 
 def alert_informational(*, kind: str, raw_title: str, detail: str, jump_url: str | None) -> Notification:
     note = Notification(
-        title="Informational card — no action",
+        title="NOTED — no action",
         level=Level.INFO,
         description=detail,
         jump_url=jump_url,
@@ -212,11 +282,11 @@ def unreadable_paste(*, preview: str, jump_url: str | None) -> Notification:
     """No card found at all. Reported rather than ignored, because a dropped
     paste and an unreadable paste look identical from the alerts channel."""
     return Notification(
-        title="Could not read that paste",
+        title="UNREADABLE — nothing traded",
         level=Level.WARNING,
         description=(
-            "No alert card was found in that message, so nothing was traded. "
-            "If it was meant to be an alert, the format has probably changed."
+            "No alert card was found in that message. If it was meant to be an alert, "
+            "the format has probably changed."
         ),
         fields=[("First 120 chars", f"```{preview[:120]}```", False)],
         jump_url=jump_url,
@@ -225,64 +295,89 @@ def unreadable_paste(*, preview: str, jump_url: str | None) -> Notification:
 
 def would_place_entry(
     *,
-    occ_symbol: str,
+    option: OptionKey,
     qty: int,
     limit_price: float,
     cap_price: float,
     timeout_seconds: float,
     jump_url: str | None,
+    today: date | None = None,
 ) -> Notification:
     """DRY_RUN: the order that would have gone out."""
     note = Notification(
-        title="Would place entry order",
+        title=f"WOULD BUY — {contract_label(option, today)}",
         level=Level.INFO,
         description="Dry run — nothing was sent to the broker.",
         jump_url=jump_url,
     )
-    note.add("Contract", f"`{occ_symbol}`", inline=False)
     note.add("Order", f"BUY {qty} @ limit {price(limit_price)}")
     note.add("Walk to", f"{price(cap_price)} max")
     note.add("Give up after", f"{timeout_seconds:.0f}s")
     return note
 
 
-def order_submitted(*, occ_symbol: str, side: str, qty: int, limit_price: float, jump_url: str | None) -> Notification:
-    note = Notification(title=f"{side} order submitted", level=Level.INFO, jump_url=jump_url)
-    note.add("Contract", f"`{occ_symbol}`", inline=False)
+def order_submitted(
+    *, option: OptionKey, side: str, qty: int, limit_price: float, jump_url: str | None,
+    today: date | None = None,
+) -> Notification:
+    note = Notification(
+        title=f"{side} WORKING — {contract_label(option, today)}",
+        level=Level.INFO,
+        jump_url=jump_url,
+    )
     note.add("Order", f"{side} {qty} @ limit {price(limit_price)}")
     return note
 
 
-def entry_filled(*, occ_symbol: str, qty: int, fill_price: float, cost: float, jump_url: str | None) -> Notification:
+def entry_filled(
+    *,
+    option: OptionKey,
+    qty: int,
+    fill_price: float,
+    cost: float,
+    jump_url: str | None,
+    levels: list[tuple[int, float]] | None = None,
+    today: date | None = None,
+) -> Notification:
+    """The entry card, in the advisor's own shape -- except the ladder here is
+    ours, recomputed off the fill we actually got."""
     note = Notification(
-        title="Entry filled",
+        title=f"BUY — {contract_label(option, today)}",
         level=Level.SUCCESS,
-        description="All later maths uses this fill price, not the advisor's entry.",
+        description=contract_sentence(option),
         jump_url=jump_url,
     )
-    note.add("Contract", f"`{occ_symbol}`", inline=False)
-    note.add("Filled", f"{qty} @ {price(fill_price)}")
+    note.add("Entry", price(fill_price))
+    note.add("Contracts", str(qty))
     note.add("Cost", money(cost))
+    if levels:
+        note.add("Trim Targets", ladder_block(levels), inline=False)
     return note
 
 
-def partial_fill(*, occ_symbol: str, filled: int, requested: int, fill_price: float, jump_url: str | None) -> Notification:
+def partial_fill(
+    *, option: OptionKey, filled: int, requested: int, fill_price: float, jump_url: str | None,
+    today: date | None = None,
+) -> Notification:
     return Notification(
-        title="Partial fill",
+        title=f"PARTIAL FILL — {contract_label(option, today)}",
         level=Level.WARNING,
-        description=f"Filled {filled} of {requested} requested. The ladder will work off {filled}.",
-        fields=[("Contract", f"`{occ_symbol}`", False), ("Average", price(fill_price), True)],
+        description=f"Filled {filled} of {requested} requested. The ladder works off {filled}.",
+        fields=[("Entry", price(fill_price), True), ("Contracts", str(filled), True)],
         jump_url=jump_url,
     )
 
 
-def entry_unfilled(*, occ_symbol: str, qty: int, cap_price: float, timeout_seconds: float, jump_url: str | None) -> Notification:
+def entry_unfilled(
+    *, option: OptionKey, qty: int, cap_price: float, timeout_seconds: float,
+    jump_url: str | None, today: date | None = None,
+) -> Notification:
     return Notification(
-        title="Entry not filled — cancelled",
+        title=f"NO FILL — {contract_label(option, today)}",
         level=Level.WARNING,
         description=(
-            f"No fill for {qty} {occ_symbol} within {timeout_seconds:.0f}s at or below "
-            f"{price(cap_price)}. Not chasing."
+            f"No fill for {qty} within {timeout_seconds:.0f}s at or below {price(cap_price)}. "
+            "Not chasing."
         ),
         jump_url=jump_url,
     )
@@ -290,71 +385,104 @@ def entry_unfilled(*, occ_symbol: str, qty: int, cap_price: float, timeout_secon
 
 def trim_executed(
     *,
-    occ_symbol: str,
+    option: OptionKey,
     level_pct: int,
     qty: int,
     fill_price: float,
+    entry_price: float,
     remaining: int,
+    original_qty: int,
     realized: float,
-    jump_url: str | None,
+    stop_note: str = "",
+    jump_url: str | None = None,
+    today: date | None = None,
 ) -> Notification:
-    note = Notification(title=f"Trim +{level_pct}% executed", level=Level.SUCCESS, jump_url=jump_url)
-    note.add("Contract", f"`{occ_symbol}`", inline=False)
-    note.add("Sold", f"{qty} @ {price(fill_price)}")
-    note.add("Remaining", f"{remaining} contracts")
-    note.add("Locked in", money(realized))
+    """The trim card, matching the advisor's: "Sold N of M @ price · K still
+    running." followed by Entry / Exit / Locked In."""
+    description = f"Sold {qty} of {original_qty} @ {price(fill_price)} · {remaining} still running."
+    if stop_note:
+        description += f"\n\n{stop_note}"
+    note = Notification(
+        title=f"TRIM +{level_pct}% — {contract_label(option, today)}",
+        level=Level.SUCCESS,
+        description=description,
+        jump_url=jump_url,
+    )
+    note.add("Entry", price(entry_price))
+    note.add("Exit", price(fill_price))
+    note.add("Locked In", f"+{money(realized)}" if realized >= 0 else money(realized))
     return note
 
 
-def stop_moved(*, occ_symbol: str, old: float | None, new: float, reason: str, jump_url: str | None) -> Notification:
+def stop_moved(
+    *, option: OptionKey, old: float | None, new: float, reason: str, remaining: int = 0,
+    jump_url: str | None = None, today: date | None = None,
+) -> Notification:
     was = price(old) if old is not None else "none"
     explanation = {
-        "breakeven": "First trim filled — the position can no longer lose money.",
+        "breakeven": (
+            f"Stop moved to break-even. The remaining {remaining} can no longer lose money."
+            if remaining else "Stop moved to break-even — this position can no longer lose money."
+        ),
         "trail": "Trailing stop ratcheted up with a new peak.",
     }.get(reason, reason)
     note = Notification(
-        title="Stop moved up",
+        title=f"STOP → {price(new)} — {contract_label(option, today)}",
         level=Level.SUCCESS,
         description=explanation,
         jump_url=jump_url,
     )
-    note.add("Contract", f"`{occ_symbol}`", inline=False)
     note.add("Stop", f"{was} → {price(new)}")
     note.add("Why", f"`{reason}`")
     return note
 
 
-def trail_armed(*, occ_symbol: str, at_price: float, giveback_pct: float, jump_url: str | None) -> Notification:
+def trail_armed(
+    *, option: OptionKey, at_price: float, giveback_pct: float, jump_url: str | None = None,
+    today: date | None = None,
+) -> Notification:
     note = Notification(
-        title="Trailing stop armed",
+        title=f"TRAIL ARMED — {contract_label(option, today)}",
         level=Level.SUCCESS,
-        description=f"From here the stop gives back at most {giveback_pct:.0f}% of the gain from the peak.",
+        description=(
+            f"From here the stop gives back at most {giveback_pct:.0f}% of the gain from the peak."
+        ),
         jump_url=jump_url,
     )
-    note.add("Contract", f"`{occ_symbol}`", inline=False)
     note.add("Armed at", price(at_price))
     return note
 
 
 def stopped_out(
     *,
-    occ_symbol: str,
+    option: OptionKey,
     qty: int,
     stop_price: float,
     fill_price: float,
+    entry_price: float = 0.0,
+    peak_price: float = 0.0,
     realized: float,
     pnl_pct: float,
-    jump_url: str | None,
+    jump_url: str | None = None,
+    today: date | None = None,
 ) -> Notification:
+    """The exit card, matching the advisor's SOLD ALL shape."""
     note = Notification(
-        title="Stopped out — position closed",
+        title=f"SOLD ALL {signed_pct(pnl_pct)} — {contract_label(option, today)}",
         level=Level.ERROR if pnl_pct < 0 else Level.SUCCESS,
+        description=contract_sentence(option, "Fully out of") + ".",
         jump_url=jump_url,
     )
-    note.add("Contract", f"`{occ_symbol}`", inline=False)
-    note.add("Sold", f"{qty} @ {price(fill_price)}")
+    if entry_price:
+        note.add("Entry → avg exit", f"{price(entry_price)} → {price(fill_price)}")
+    else:
+        note.add("Exit", price(fill_price))
+    note.add("Realized", f"+{money(realized)}" if realized >= 0 else money(realized))
     note.add("Stop was", price(stop_price))
-    note.add("Realized", f"{money(realized)} ({signed_pct(pnl_pct)})")
+    note.add("Contracts", str(qty))
+    if peak_price and entry_price:
+        peak_pct = (peak_price / entry_price - 1) * 100
+        note.add("Peak", f"{signed_pct(peak_pct)} ({price(peak_price)})")
     return note
 
 

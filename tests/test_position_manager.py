@@ -55,6 +55,9 @@ def build(storage: Storage, *, feed: Feed | None = None, **overrides):
     broker._connected = True
     risk = RiskGate(settings, storage)
     manager = PositionManager(settings, storage, risk, broker)
+    # Pin the booking day so the suite does not pass only on the date it was
+    # written -- the real clock is the production default.
+    manager.today = lambda: TRADING_DAY
     pipeline = AlertPipeline(settings, storage, risk, broker, manager)
     return feed, broker, manager, pipeline, risk
 
@@ -80,7 +83,7 @@ async def test_an_alert_fills_and_becomes_a_managed_position(storage):
 
     result = await enter(pipeline, feed)
 
-    assert has(result.notifications, "Entry filled")
+    assert has(result.notifications, "BUY")
     assert SPX_OCC in manager.managed
     (position,) = await broker.get_positions()
     assert position.qty == 21
@@ -119,8 +122,8 @@ async def test_the_first_trim_sells_and_promotes_the_stop_to_breakeven(storage):
     feed.set(0.62)  # 0.48 * 1.25 = 0.60, so this clears the +25% rung
     notes = await manager.poll_once()
 
-    assert has(notes, "Trim +25%")
-    assert has(notes, "Stop moved up")
+    assert has(notes, "TRIM +25%")
+    assert has(notes, "STOP \u2192")
     state = manager.managed[SPX_OCC].state
     assert state.remaining_qty == 15  # sold ceil(21*0.25) = 6
     assert state.stop_price == 0.48
@@ -168,9 +171,9 @@ async def test_a_gap_through_several_rungs_fires_each_one(storage):
     feed.set(0.90)
     notes = await manager.poll_once()
 
-    assert has(notes, "Trim +25%")
-    assert has(notes, "Trim +50%")
-    assert has(notes, "Trim +75%")
+    assert has(notes, "TRIM +25%")
+    assert has(notes, "TRIM +50%")
+    assert has(notes, "TRIM +75%")
     assert manager.managed[SPX_OCC].state.remaining_qty == 8
 
 
@@ -198,11 +201,11 @@ async def test_a_breach_needs_confirming_before_it_exits(storage):
 
     feed.set(0.45)
     first = await manager.poll_once()
-    assert not has(first, "Stopped out")
+    assert not has(first, "SOLD ALL")
 
     feed.set(0.44)
     second = await manager.poll_once()
-    assert has(second, "Stopped out")
+    assert has(second, "SOLD ALL")
 
 
 async def test_a_single_bad_tick_does_not_stop_the_position_out(storage):
@@ -218,7 +221,7 @@ async def test_a_single_bad_tick_does_not_stop_the_position_out(storage):
     feed.set(0.45)
     notes = await manager.poll_once()
 
-    assert not has(notes, "Stopped out")
+    assert not has(notes, "SOLD ALL")
     assert SPX_OCC in manager.managed
 
 
@@ -233,7 +236,7 @@ async def test_stopping_out_closes_the_position_everywhere(storage):
     feed.set(0.44)
     notes = await manager.poll_once()
 
-    assert has(notes, "Stopped out")
+    assert has(notes, "SOLD ALL")
     assert manager.managed == {}
     assert await broker.get_positions() == []
     assert storage.open_position_count() == 0
@@ -253,7 +256,7 @@ async def test_a_trailed_stop_exits_above_breakeven(storage):
     await manager.poll_once()
     notes = await manager.poll_once()
 
-    assert has(notes, "Stopped out")
+    assert has(notes, "SOLD ALL")
 
 
 async def test_the_realized_pnl_reaches_the_day_counters(storage):
@@ -281,6 +284,7 @@ async def test_a_restart_restores_the_whole_rules_state(storage):
     # A fresh process over the same database and the same broker state.
     settings = make_settings(mode="paper")
     reborn = PositionManager(settings, storage, RiskGate(settings, storage), broker)
+    reborn.today = lambda: TRADING_DAY
     lines, mismatched = await reborn.reconcile()
 
     after = reborn.managed[SPX_OCC].state
@@ -302,13 +306,14 @@ async def test_a_restored_position_keeps_laddering(storage):
 
     settings = make_settings(mode="paper")
     reborn = PositionManager(settings, storage, RiskGate(settings, storage), broker)
+    reborn.today = lambda: TRADING_DAY
     await reborn.reconcile()
 
     feed.set(0.74)
     notes = await reborn.poll_once()
 
-    assert has(notes, "Trim +50%")
-    assert not has(notes, "Trim +25%"), "the rung fired before the restart must not re-fire"
+    assert has(notes, "TRIM +50%")
+    assert not has(notes, "TRIM +25%"), "the rung fired before the restart must not re-fire"
     assert reborn.managed[SPX_OCC].state.fired_levels >= {25, 50}
 
 
@@ -319,6 +324,7 @@ async def test_reconciliation_reports_a_position_the_broker_does_not_have(storag
     broker.drop_position(SPX_OCC)  # as an account-wide flatten would
     settings = make_settings(mode="paper")
     reborn = PositionManager(settings, storage, RiskGate(settings, storage), broker)
+    reborn.today = lambda: TRADING_DAY
     lines, mismatched = await reborn.reconcile()
 
     assert mismatched is True
@@ -336,6 +342,7 @@ async def test_reconciliation_corrects_a_quantity_down_to_the_brokers(storage):
 
     settings = make_settings(mode="paper")
     reborn = PositionManager(settings, storage, RiskGate(settings, storage), broker)
+    reborn.today = lambda: TRADING_DAY
     lines, mismatched = await reborn.reconcile()
 
     assert mismatched is True
@@ -428,7 +435,7 @@ async def test_flatten_closes_everything_at_a_marketable_limit(storage):
 
     notes = await manager.flatten_all()
 
-    assert has(notes, "position closed")
+    assert has(notes, "SOLD ALL")
     assert manager.managed == {}
     assert await broker.get_positions() == []
     assert storage.open_position_count() == 0

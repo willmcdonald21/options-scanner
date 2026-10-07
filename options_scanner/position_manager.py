@@ -109,6 +109,10 @@ class PositionManager:
         self.broker = broker
         self._notify = notify
         self.rules: RulesConfig = settings.rules()
+        # Which trading day realized P&L is booked against. Injectable so a
+        # test is deterministic rather than passing only on the day it was
+        # written -- the real clock is the default.
+        self.today = today_et
         self.managed: dict[str, Managed] = {}
         self._near_close_warned = False
         self._running = False
@@ -277,7 +281,7 @@ class PositionManager:
             apply_action(state, action)
             tick.add(
                 trail_armed(
-                    occ_symbol=managed.symbol,
+                    option=state.option,
                     at_price=action.at_price,
                     giveback_pct=self.settings.trail.giveback_pct,
                     jump_url=managed.jump_url,
@@ -290,10 +294,11 @@ class PositionManager:
             apply_action(state, action)
             tick.add(
                 stop_moved(
-                    occ_symbol=managed.symbol,
+                    option=state.option,
                     old=previous,
                     new=action.price,
                     reason=action.reason,
+                    remaining=state.remaining_qty,
                     jump_url=managed.jump_url,
                 )
             )
@@ -350,7 +355,7 @@ class PositionManager:
         proceeds = outcome.filled_qty * (outcome.avg_price or 0.0) * 100
         realized = (outcome.avg_price or 0.0) - state.entry_fill
         managed.realized += realized * outcome.filled_qty * 100
-        self.risk.record_realized(realized * outcome.filled_qty * 100, today_et())
+        self.risk.record_realized(realized * outcome.filled_qty * 100, self.today())
 
         self.storage.record_order(
             occ_symbol=managed.symbol,
@@ -364,32 +369,46 @@ class PositionManager:
             detail=outcome.detail,
         )
 
-        tick.add(
-            trim_executed(
-                occ_symbol=managed.symbol,
-                level_pct=action.level_pct,
-                qty=outcome.filled_qty,
-                fill_price=outcome.avg_price or 0.0,
-                remaining=state.remaining_qty,
-                realized=proceeds,
-                jump_url=managed.jump_url,
-            )
-        )
-
         # Breakeven is driven by the fill, not by the signal -- until these
-        # contracts actually sold, we still held them.
-        for follow_up in on_trim_fill(state, action.level_pct, self.rules):
+        # contracts actually sold, we still held them. Resolved before the trim
+        # card is built so the stop note can ride along on it, the way the
+        # advisor's own trim cards carry theirs.
+        stop_updates = on_trim_fill(state, action.level_pct, self.rules)
+        stop_note = ""
+        for follow_up in stop_updates:
             previous = state.stop_price
             apply_action(state, follow_up)
+            stop_note = (
+                f"Stop moved to break-even at {follow_up.price:.2f} — the remaining "
+                f"{state.remaining_qty} can no longer lose money."
+                if follow_up.reason == "breakeven"
+                else f"Stop now {follow_up.price:.2f} ({follow_up.reason})."
+            )
             tick.add(
                 stop_moved(
-                    occ_symbol=managed.symbol,
+                    option=state.option,
                     old=previous,
                     new=follow_up.price,
                     reason=follow_up.reason,
+                    remaining=state.remaining_qty,
                     jump_url=managed.jump_url,
                 )
             )
+
+        tick.add(
+            trim_executed(
+                option=state.option,
+                level_pct=action.level_pct,
+                qty=outcome.filled_qty,
+                fill_price=outcome.avg_price or 0.0,
+                entry_price=state.entry_fill,
+                remaining=state.remaining_qty,
+                original_qty=state.original_qty,
+                realized=proceeds - outcome.filled_qty * state.entry_fill * 100,
+                stop_note=stop_note,
+                jump_url=managed.jump_url,
+            )
+        )
 
     async def _do_stop_out(self, managed: Managed, action: StopOut, tick: Tick) -> None:
         state = managed.state
@@ -428,7 +447,7 @@ class PositionManager:
         realized_per = fill_price - state.entry_fill
         realized = realized_per * outcome.filled_qty * 100
         managed.realized += realized
-        self.risk.record_realized(realized, today_et())
+        self.risk.record_realized(realized, self.today())
 
         self.storage.record_order(
             occ_symbol=managed.symbol,
@@ -444,10 +463,12 @@ class PositionManager:
         pnl_pct = (realized_per / state.entry_fill * 100) if state.entry_fill else 0.0
         tick.add(
             stopped_out(
-                occ_symbol=managed.symbol,
+                option=state.option,
                 qty=outcome.filled_qty,
                 stop_price=action.stop_price,
                 fill_price=fill_price,
+                entry_price=state.entry_fill,
+                peak_price=state.peak_bid,
                 realized=managed.realized,
                 pnl_pct=pnl_pct,
                 jump_url=managed.jump_url,
@@ -504,7 +525,7 @@ class PositionManager:
             fill_price = outcome.avg_price or 0.0
             realized = (fill_price - managed.state.entry_fill) * outcome.filled_qty * 100
             managed.realized += realized
-            self.risk.record_realized(realized, today_et())
+            self.risk.record_realized(realized, self.today())
             apply_action(managed.state, StopOut(outcome.filled_qty, fill_price, bid))
             self.storage.record_order(
                 occ_symbol=symbol,
@@ -523,10 +544,12 @@ class PositionManager:
             )
             notes.append(
                 stopped_out(
-                    occ_symbol=symbol,
+                    option=managed.state.option,
                     qty=outcome.filled_qty,
                     stop_price=fill_price,
                     fill_price=fill_price,
+                    entry_price=managed.state.entry_fill,
+                    peak_price=managed.state.peak_bid,
                     realized=managed.realized,
                     pnl_pct=pnl_pct,
                     jump_url=managed.jump_url,

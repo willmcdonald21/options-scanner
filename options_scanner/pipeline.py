@@ -285,7 +285,13 @@ class AlertPipeline:
             self.storage.bump_day(trading_day, alerts_skipped=1)
             result.add(
                 REACTION_SKIPPED,
-                alert_skipped(reason=decision.reason.value, detail=decision.detail, jump_url=jump_url),
+                alert_skipped(
+                    reason=decision.reason.value,
+                    detail=decision.detail,
+                    jump_url=jump_url,
+                    option=alert.option,
+                    today=trading_day,
+                ),
             )
             return
 
@@ -338,7 +344,10 @@ class AlertPipeline:
                 self.storage.bump_day(trading_day, alerts_skipped=1)
                 result.add(
                     REACTION_SKIPPED,
-                    alert_skipped(reason="ask_above_cap", detail=detail, jump_url=jump_url),
+                    alert_skipped(
+                        reason="ask_above_cap", detail=detail, jump_url=jump_url,
+                        option=alert.option, today=trading_day,
+                    ),
                 )
                 return
 
@@ -358,14 +367,15 @@ class AlertPipeline:
         ]
 
         parsed_note = alert_parsed(
+            option=alert.option,
             occ_symbol=spec.occ_symbol,
-            description=f"{alert.option.ticker} {alert.option.strike:g}{alert.option.right}",
             entry_price=reference_price,
             advisor_contracts=alert.advisor_contracts,
             our_contracts=contracts,
             cost=cost,
             jump_url=jump_url,
             levels=ladder,
+            today=trading_day,
         )
 
         if self.dry_run:
@@ -386,12 +396,13 @@ class AlertPipeline:
                 REACTION_PLACED,
                 parsed_note,
                 would_place_entry(
-                    occ_symbol=spec.occ_symbol,
+                    option=alert.option,
                     qty=contracts,
                     limit_price=reference_price,
                     cap_price=cap_price,
                     timeout_seconds=settings.entry.fill_timeout_seconds,
                     jump_url=jump_url,
+                    today=trading_day,
                 ),
             )
             return
@@ -453,6 +464,7 @@ class AlertPipeline:
                     cap_price=cap_price,
                     timeout_seconds=settings.entry.fill_timeout_seconds,
                     jump_url=jump_url,
+                    today=trading_day,
                 ),
             )
             return
@@ -466,11 +478,12 @@ class AlertPipeline:
             result.add(
                 REACTION_PLACED,
                 partial_fill(
-                    occ_symbol=spec.occ_symbol,
+                    option=alert.option,
                     filled=filled,
                     requested=contracts,
                     fill_price=fill_price,
                     jump_url=jump_url,
+                    today=trading_day,
                 ),
             )
 
@@ -494,11 +507,19 @@ class AlertPipeline:
         result.add(
             REACTION_PLACED,
             entry_filled(
-                occ_symbol=spec.occ_symbol,
+                option=alert.option,
                 qty=filled,
                 fill_price=fill_price,
                 cost=filled * fill_price * 100,
                 jump_url=jump_url,
+                # Our ladder, recomputed off the fill we actually got -- not
+                # the one the card advertised off the advisor's entry.
+                levels=[
+                    (level, level_price(fill_price, level))
+                    for level, pct in settings.trim.schedule
+                    if pct > 0
+                ],
+                today=trading_day,
             ),
         )
 
