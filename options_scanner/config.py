@@ -53,6 +53,16 @@ class DiscordSettings(BaseModel):
     updates_channel_id: int = Field(gt=0)
     owner_user_id: int = Field(gt=0)
 
+    # Optional. When set, updates are posted through this webhook instead of
+    # through the bot's own Send Messages permission. The bot token is still
+    # required either way: a webhook cannot read, and the bot has to read the
+    # alerts channel and the commands typed in the updates channel.
+    updates_webhook_url: str = ""
+
+    @property
+    def posts_via_webhook(self) -> bool:
+        return bool(self.updates_webhook_url.strip())
+
     @model_validator(mode="after")
     def _channels_must_differ(self) -> "DiscordSettings":
         if self.alerts_channel_id == self.updates_channel_id:
@@ -254,6 +264,12 @@ class Settings(BaseModel):
         still a credential leak."""
         data = self.model_dump(mode="json")
         data["discord"]["bot_token"] = "***redacted***"
+        if data["discord"].get("updates_webhook_url"):
+            # A webhook URL is a bearer credential: anyone holding it can post
+            # to the channel, so only the id is safe to log.
+            from options_scanner.webhook import redact
+
+            data["discord"]["updates_webhook_url"] = redact(self.discord.updates_webhook_url)
         return data
 
     def summary_line(self) -> str:
@@ -282,6 +298,7 @@ def _discord_from_env() -> dict[str, Any]:
         "alerts_channel_id": int(os.environ["ALERTS_CHANNEL_ID"]),
         "updates_channel_id": int(os.environ["UPDATES_CHANNEL_ID"]),
         "owner_user_id": int(os.environ["OWNER_USER_ID"]),
+        "updates_webhook_url": os.environ.get("UPDATES_WEBHOOK_URL", ""),
     }
 
 
