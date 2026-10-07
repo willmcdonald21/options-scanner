@@ -113,3 +113,145 @@ def test_bare_milestones_are_informational_only():
     events = _events()
     kinds = {e.kind for e in events if isinstance(e, InfoEvent)}
     assert kinds == {"milestone", "averaging_down", "new_alert"}
+
+
+# --- the trim ladder on a BUY card ---------------------------------------
+
+
+def test_buy_events_carry_the_published_trim_ladder():
+    buys = [e for e in _events() if isinstance(e, BuyEvent)]
+
+    assert len(buys) == 20
+    for buy in buys:
+        assert len(buy.trim_targets) == 4, f"{buy.option} lost its ladder"
+        assert [t.pct for t in buy.trim_targets] == [0.25, 0.50, 0.75, 1.00]
+        # Rungs ascend and all sit above the entry.
+        prices = [t.price for t in buy.trim_targets]
+        assert prices == sorted(prices)
+        assert prices[0] > buy.entry_price
+
+
+def test_trim_ladder_prices_match_the_card_exactly():
+    buy = next(e for e in _events() if isinstance(e, BuyEvent) and e.option.ticker == "SPY")
+
+    assert buy.entry_price == 0.885
+    assert [t.price for t in buy.trim_targets] == [1.106, 1.328, 1.549, 1.770]
+
+
+def test_averaging_down_card_ladder_is_read_from_the_new_avg_field():
+    """After an AVERAGING DOWN the field is titled "Trim Targets (new avg)"."""
+    from options_scanner.parser import _parse_trim_targets
+
+    targets = _parse_trim_targets({"Trim Targets (new avg)": "25%   $0.269\n50%   $0.323\n75%   $0.376\n100%  $0.430"})
+
+    assert [t.price for t in targets] == [0.269, 0.323, 0.376, 0.430]
+
+
+def test_a_buy_without_a_ladder_field_parses_with_an_empty_one():
+    """exit_plan substitutes a computed ladder; the parser just reports
+    that the card didn't carry one."""
+    from options_scanner.parser import _parse_trim_targets
+
+    assert _parse_trim_targets({"Entry": "$1.00"}) == ()
+
+
+# --- cards pasted without the "SWIFT TRADES" banner ----------------------
+
+_ANALYST_TRIM = """Analyst - SWIFT 
+ TRIM +25% — QQQ 740C · Oct 2
+Sold 1 of 10 @ $6.413 · 9 still running.
+
+ Stop moved to break-even. Trim filled at $6.413 (+25%, trigger was +25%). Remaining 9 now stopped at $5.29 — this position can no longer lose money.
+Open Live Dashboard →
+Entry
+$5.13
+Exit
+$6.413
+Locked In
++$128.25
+
+Not financial advice"""
+
+_ANALYST_SOLD_ALL = """Analyst - SWIFT 
+ SOLD ALL +130% — GOOGL 350C · Oct 2
+Fully out of GOOGL Oct02 '26 350 Call.
+Open Live Dashboard →
+Entry → avg exit
+$1.596 → $2.687
+Realized
++68.34%
+Best fill
+$3.592
+Peak
++130.2% ($3.675)
+
+Not financial advice"""
+
+
+def test_analyst_headed_trim_card_is_not_dropped():
+    """These carry no "SWIFT TRADES · LIVE DESK" banner at all -- splitting
+    on that marker alone discarded every exit message silently."""
+    embeds = parse_chat_export(_ANALYST_TRIM, reference_date=datetime(2026, 10, 2))
+    assert len(embeds) == 1
+
+    event = parse_embed(embeds[0])
+    assert isinstance(event, TrimEvent)
+    assert event.underlying == UnderlyingKey("QQQ", 740.0, "C")
+    assert event.tier_pct == 0.25
+    assert (event.sold_this_event, event.channel_remaining_after) == (1, 9)
+
+
+def test_analyst_headed_sold_all_card_is_not_dropped():
+    embeds = parse_chat_export(_ANALYST_SOLD_ALL, reference_date=datetime(2026, 10, 2))
+    assert len(embeds) == 1
+
+    event = parse_embed(embeds[0])
+    assert isinstance(event, SoldAllEvent)
+    assert event.underlying == UnderlyingKey("GOOGL", 350.0, "C")
+    assert event.avg_exit_price == 2.687
+
+
+def test_a_card_pasted_with_no_header_at_all_still_parses():
+    bare = "\n".join(_ANALYST_SOLD_ALL.splitlines()[1:])
+    embeds = parse_chat_export(bare, reference_date=datetime(2026, 10, 2))
+
+    assert len(embeds) == 1
+    assert isinstance(parse_embed(embeds[0]), SoldAllEvent)
+
+
+def test_unrelated_chatter_yields_no_cards():
+    """main.py alerts on an empty result, so ordinary conversation must
+    not look like a card."""
+    assert parse_chat_export("hey is anyone else seeing this fill?") == []
+    assert parse_chat_export("") == []
+
+
+def test_the_live_buy_card_parses_with_its_ladder():
+    card = """SWIFT TRADES · LIVE DESK
+ BUY — SPY 764C · Sep 30
+Entered SPY Sep30 '26 764 Call
+Open Live Dashboard →
+Entry
+$1.905
+Contracts
+25
+Cost
+$4,763
+Trim Targets
+25%   $2.381
+50%   $2.858
+75%   $3.334
+100%  $3.810
+News backdrop
+ Broad Market leaning down — 2 up / 4 down in the last 6h
+
+Real trade · data via IBKR · Not financial advice•9/29/26, 1:25 PM"""
+
+    event = parse_embed(parse_chat_export(card, reference_date=datetime(2026, 9, 29))[0])
+
+    assert isinstance(event, BuyEvent)
+    assert event.option == OptionKey("SPY", date(2026, 9, 30), 764.0, "C")
+    assert (event.entry_price, event.contracts, event.cost) == (1.905, 25, 4763.0)
+    # The News backdrop field sits directly after the ladder and must not
+    # be swallowed into it.
+    assert [t.price for t in event.trim_targets] == [2.381, 2.858, 3.334, 3.810]

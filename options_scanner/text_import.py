@@ -5,14 +5,30 @@ from datetime import datetime, timedelta
 
 from options_scanner.parser import ParsedEmbed
 
-_BLOCK_MARKER = "SWIFT TRADES · LIVE DESK"
+# Header lines that start a new alert card. BUY cards carry the "SWIFT
+# TRADES · LIVE DESK" banner; TRIM / SOLD ALL cards as copied out of the
+# client are headed "Analyst - SWIFT" instead and carry no banner at all,
+# so splitting on the banner alone silently dropped every exit message.
+_BLOCK_MARKERS = ("SWIFT TRADES · LIVE DESK", "Analyst - SWIFT")
 _DASHBOARD_LINE = "Open Live Dashboard"
 _FOOTER_MARKER = "financial advice"
 
-# Only fields the parser actually reads off ParsedEmbed.fields; every other
-# field (Trim Targets, News backdrop, Realized, Best fill, Peak, ...) is
-# real but unused by parse_embed(), so it's fine to skip capturing it here.
+# Fields whose value is the single following line.
 _KNOWN_SIMPLE_FIELDS = {"Entry", "Contracts", "Cost", "New Avg", "Total Contracts", "Entry → avg exit"}
+
+# Fields whose value spans every following line until the next field name
+# or a blank line. "Trim Targets" is the exit ladder we rest at the broker;
+# "(new avg)" is the same field after an averaging-down.
+_KNOWN_MULTILINE_FIELDS = {"Trim Targets", "Trim Targets (new avg)"}
+
+_ALL_FIELD_NAMES = _KNOWN_SIMPLE_FIELDS | _KNOWN_MULTILINE_FIELDS | {"News backdrop", "Realized", "Best fill", "Peak", "Locked In", "Exit"}
+
+# First line of a card when the header banner is missing entirely (e.g. a
+# single alert pasted on its own). Mirrors bot/parser.py's title patterns.
+_BARE_TITLE_RE = re.compile(
+    r"^\W*(BUY|TRIM|SOLD ALL|EXPIRED|NEW ALERT|AVERAGING DOWN|[+-]?\d+(?:\.\d+)?%)\b",
+    re.IGNORECASE,
+)
 
 _EXPLICIT_TS_RE = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{2}),\s*(\d{1,2}):(\d{2})\s*(AM|PM)")
 _RELATIVE_TS_RE = re.compile(r"(Today|Yesterday) at (\d{1,2}):(\d{2})\s*(AM|PM)")
@@ -49,7 +65,7 @@ def parse_chat_export(text: str, reference_date: datetime | None = None) -> list
     blocks: list[list[str]] = []
     current: list[str] | None = None
     for line in lines:
-        if _BLOCK_MARKER in line:
+        if any(marker in line for marker in _BLOCK_MARKERS):
             if current is not None:
                 blocks.append(current)
             current = []
@@ -58,6 +74,14 @@ def parse_chat_export(text: str, reference_date: datetime | None = None) -> list
             current.append(line)
     if current is not None:
         blocks.append(current)
+
+    # No header banner anywhere, but the paste itself opens with a
+    # recognizable alert title -- treat the whole thing as one card rather
+    # than discarding it. Covers a single alert copied without its header.
+    if not blocks:
+        non_empty = [ln for ln in lines if ln.strip()]
+        if non_empty and _BARE_TITLE_RE.match(non_empty[0].strip()):
+            blocks = [lines]
 
     embeds: list[ParsedEmbed] = []
     for message_id, block in enumerate(blocks):
@@ -81,6 +105,19 @@ def _parse_block(message_id: int, lines: list[str], reference_date: datetime) ->
         i = 0
         while i < len(field_lines):
             name = field_lines[i].strip()
+            if name in _KNOWN_MULTILINE_FIELDS:
+                value_lines: list[str] = []
+                j = i + 1
+                while j < len(field_lines):
+                    candidate = field_lines[j].strip()
+                    if not candidate or candidate in _ALL_FIELD_NAMES:
+                        break
+                    value_lines.append(candidate)
+                    j += 1
+                if value_lines:
+                    fields[name] = "\n".join(value_lines)
+                    i = j
+                    continue
             if name in _KNOWN_SIMPLE_FIELDS and i + 1 < len(field_lines):
                 value = field_lines[i + 1].strip()
                 if value:

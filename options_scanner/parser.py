@@ -12,6 +12,7 @@ from options_scanner.models import (
     SoldAllEvent,
     TradeEvent,
     TrimEvent,
+    TrimTarget,
     UnderlyingKey,
     UnknownEvent,
 )
@@ -132,6 +133,24 @@ def parse_embed(embed: ParsedEmbed) -> TradeEvent:
     )
 
 
+# One rung of the "Trim Targets" block, e.g. "25%   $2.381" or "100%  $3.810".
+_TRIM_TARGET_RE = re.compile(r"(?P<pct>\d+(?:\.\d+)?)%\s+\$?(?P<price>[\d,]+\.?\d*)")
+
+
+def _parse_trim_targets(fields: dict[str, str]) -> tuple[TrimTarget, ...]:
+    """Reads the BUY card's own exit ladder. Returns () when the field is
+    absent -- the caller substitutes a ladder computed off entry rather
+    than leaving the position unbracketed (see bot/exit_plan.py)."""
+    raw = fields.get("Trim Targets") or fields.get("Trim Targets (new avg)")
+    if not raw:
+        return ()
+    targets = [
+        TrimTarget(pct=float(m.group("pct")) / 100.0, price=float(m.group("price").replace(",", "")))
+        for m in _TRIM_TARGET_RE.finditer(raw)
+    ]
+    return tuple(sorted(targets, key=lambda t: t.pct))
+
+
 def _parse_buy(embed: ParsedEmbed, title: str) -> BuyEvent:
     option = _parse_contract_line(embed.description, embed.timestamp)
     is_lotto = "lotto" in embed.description.lower() or any("lotto" in v.lower() for v in embed.fields.values())
@@ -142,6 +161,7 @@ def _parse_buy(embed: ParsedEmbed, title: str) -> BuyEvent:
         contracts=int(embed.fields["Contracts"]),
         cost=_parse_money(embed.fields["Cost"]),
         is_lotto=is_lotto,
+        trim_targets=_parse_trim_targets(embed.fields),
     )
 
 
