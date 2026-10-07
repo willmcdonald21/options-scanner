@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from config.settings import PROJECT_ROOT
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def setup_logging(level: str = "INFO", log_file: str = "logs/options_scanner.log") -> logging.Logger:
