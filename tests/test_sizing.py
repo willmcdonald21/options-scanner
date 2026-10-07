@@ -1,6 +1,6 @@
 import pytest
 
-from bot.sizing import compute_contracts
+from options_scanner.sizing import compute_contracts
 
 
 def test_rounds_down_to_whole_contracts():

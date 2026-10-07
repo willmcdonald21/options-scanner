@@ -1,7 +1,7 @@
 from datetime import date
 
-from bot.contracts import resolve_contract
-from bot.models import OptionKey
+from options_scanner.contracts import resolve_contract
+from options_scanner.models import OptionKey
 
 
 def test_standard_ticker_routes_smart_with_no_trading_class():

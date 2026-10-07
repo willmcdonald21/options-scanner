@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ib_async import Option
 
-from bot.models import OptionKey
+from options_scanner.models import OptionKey
 
 # Ticker-specific overrides for index options, which don't route through
 # SMART like equity options do. SPX is cash-settled and trades on CBOE;

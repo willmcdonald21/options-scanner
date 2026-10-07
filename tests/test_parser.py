@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from pathlib import Path
 
-from bot.models import (
+from options_scanner.models import (
     BuyEvent,
     ExpiredEvent,
     InfoEvent,
@@ -11,8 +11,8 @@ from bot.models import (
     UnderlyingKey,
     UnknownEvent,
 )
-from bot.parser import parse_embed
-from bot.text_import import parse_chat_export
+from options_scanner.parser import parse_embed
+from options_scanner.text_import import parse_chat_export
 
 FIXTURE = Path(__file__).parent / "fixtures" / "swift_chat_dump.txt"
 

@@ -14,7 +14,7 @@ dependencies = [
 dev = ["pytest", "pytest-asyncio"]
 
 [tool.setuptools.packages.find]
-include = ["bot*"]
+include = ["options_scanner*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

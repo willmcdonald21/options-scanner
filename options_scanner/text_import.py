@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 
-from bot.parser import ParsedEmbed
+from options_scanner.parser import ParsedEmbed
 
 _BLOCK_MARKER = "SWIFT TRADES · LIVE DESK"
 _DASHBOARD_LINE = "Open Live Dashboard"

@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from bot.models import (
+from options_scanner.models import (
     BuyEvent,
     ExpiredEvent,
     InfoEvent,
