@@ -326,16 +326,37 @@ missing and raises a false alarm.
 
 | Risk | Mechanism | Handling |
 |---|---|---|
-| **warrior_bot flattening our options** | its reconciliation walks *every* account position every 30s and flattens anything with no resting stop. Our stops are synthetic, so it sees "uncovered". | a `secType == "STK"` filter in warrior_bot. `doctor` checks the filter is present **and** that the running process is newer than it — a process started before the patch is still running the old code. |
+| **warrior_bot flattening our options** | its reconciliation walks *every* account position every 30s and flattens anything with no resting stop. Our stops are synthetic, so it sees "uncovered". | a `secType == "STK"` filter in warrior_bot, plus an account filter. `doctor` checks the filter is present **and** that the running process is newer than it — a process started before the patch is still running the old code. |
 | Client ID collision | IBKR refuses the second connection outright | warrior 11, scanner 12, its scripts 111/161, the probe 19. `doctor` compares them. |
-| `reqGlobalCancel()` | account-wide, not per-client; cancels our working entry limits | cannot be scoped. The phantom-exit detector @-mentions you when a position changes without one of our orders. Detection, not prevention. |
+| `reqGlobalCancel()` | took no account argument, so it cancelled everything the login could see — including our working entry limits | **replaced** in warrior_bot with cancelling its own account's orders one at a time. `doctor` fails if the call ever comes back. |
 | Market-data lines | warrior self-caps at 90; IBKR's default is 100 | we add at most `max_open_positions`. `doctor` warns if the total would exceed 100. |
 | Buying power | shared | the scanner risks at most `max_open_positions × max_usd_per_trade` |
 | Mac sleep | a sleeping Mac has no synthetic stop | `sudo pmset -c sleep 0 disksleep 0`. `doctor` fails if it is not 0. |
 | Gateway dropping | the stop silently stops working | enable **Auto restart** (not Auto logoff) in Configure → Settings → Lock and Exit. `doctor` reads Gateway's own log to tell you whether it is enabled. |
 
-The only real isolation is a **second paper account**. Everything above is
-mitigation.
+### Account isolation
+
+Both bots now take an account id — `broker.account` here, `trading.account` in
+warrior_bot. Blank means "whatever the login manages", which is correct and is a
+no-op while the login holds one account.
+
+Once a second account is linked under the same username, **both must be set**:
+
+- IBKR rejects any order that does not name an account when more than one is
+  managed, so every order would fail
+- an unscoped position read returns the other bot's holdings, which feed
+  straight into this bot's sell clamp and warrior_bot's flatten-on-sight
+  reconciliation
+
+Both bots refuse to connect in that state rather than discovering it on the
+first alert of the day, and `doctor` checks the two ids are set, differ, and are
+actually managed by the login. See
+[docs/ibkr-separate-accounts.md](docs/ibkr-separate-accounts.md) for how to open
+the second account.
+
+What a second account does **not** isolate: one Gateway process (an outage still
+stops both), the market-data line pool, and API request pacing. Those follow
+from using one login.
 
 ### Keeping the scanner up
 

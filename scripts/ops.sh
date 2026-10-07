@@ -110,8 +110,11 @@ cmd_status() {
   ( cd "$SCANNER_DIR" && "$PY" -c "
 from options_scanner.market_hours import describe
 print('  ' + describe())" 2>/dev/null ) || echo "  (could not read the calendar)"
-  printf '  scanner mode=%s broker=%s\n' \
-    "$(scanner_cfg mode '?')" "$(scanner_cfg broker.kind '?')"
+  local sa wa
+  sa="$(scanner_cfg broker.account '')"; wa="$(warrior_cfg trading.account '')"
+  printf '  scanner mode=%s broker=%s account=%s\n' \
+    "$(scanner_cfg mode '?')" "$(scanner_cfg broker.kind '?')" "${sa:-(the only one)}"
+  printf '  warrior account=%s\n' "${wa:-(the only one)}"
 
   head_ "Account"
   if [[ -z "$gp" ]]; then
@@ -121,6 +124,14 @@ print('  ' + describe())" 2>/dev/null ) || echo "  (could not read the calendar)
     if [[ "$(field connected "$out")" == "yes" ]]; then
       printf '  %s  paper=%s  net_liq=%s\n' \
         "$(field account "$out")" "$(field is_paper "$out")" "$(field net_liquidation "$out")"
+      # One line per managed account, and which account holds what, so the
+      # isolation can be seen rather than assumed once the bots are split.
+      grep -E '^(account_[0-9]+|positions_in_)' <<<"$out" | while IFS='=' read -r key value; do
+        case "$key" in
+          account_*)      printf '    managed: %s\n' "$value" ;;
+          positions_in_*) printf '    holds %s position(s): %s\n' "$value" "${key#positions_in_}" ;;
+        esac
+      done
       printf '  positions: %s (%s opt / %s stk)   open orders: %s   from clients: %s\n' \
         "$(field positions_total "$out")" "$(field positions_opt "$out")" \
         "$(field positions_stk "$out")" "$(field open_orders "$out")" \
@@ -180,6 +191,46 @@ cmd_doctor() {
     bad "both bots want client id $sclient — IBKR refuses the second connection"
   else
     ok "scanner=$sclient warrior=$wclient probe=$PROBE_CLIENT_ID (all distinct)"
+  fi
+
+  head_ "Account isolation"
+  local saccount waccount managed
+  saccount="$(scanner_cfg broker.account '')"
+  waccount="$(warrior_cfg trading.account '')"
+  managed=""
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    managed="$(field account "$(probe)")"
+  fi
+
+  if [[ -z "$saccount" && -z "$waccount" ]]; then
+    # One account under the login is the state this was built for, and blank is
+    # correct there. It stops being correct the moment a second one appears.
+    if [[ "$managed" == *,* ]]; then
+      bad "this login manages several accounts ($managed) but neither bot names one"
+      note "set broker.account (config.yaml) and trading.account (warrior config/config.yaml)"
+    else
+      ok "neither bot names an account, and the login manages one${managed:+ ($managed)}"
+    fi
+  elif [[ "$saccount" == "$waccount" ]]; then
+    bad "both bots are pointed at the same account ($saccount) — that is not isolation"
+  else
+    ok "scanner=${saccount:-(unset)} warrior=${waccount:-(unset)} are different"
+    for pair in "scanner:$saccount" "warrior:$waccount"; do
+      local who="${pair%%:*}" acct="${pair#*:}"
+      [[ -z "$acct" ]] && { warn "$who names no account while the other does"; continue; }
+      if [[ -n "$managed" && ",$managed," != *",$acct,"* ]]; then
+        bad "$who is configured for $acct, which this login does not manage ($managed)"
+      fi
+    done
+  fi
+
+  # reqGlobalCancel takes no account argument, so it cancels across accounts.
+  # Match the call form (ib.reqGlobalCancel) rather than the bare name, which
+  # also appears in the docstring explaining why it was removed.
+  if grep -qE "\bib\.reqGlobalCancel\(" "$WARRIOR_DIR/warrior_bot/utils/panic.py" 2>/dev/null; then
+    bad "warrior_bot still calls reqGlobalCancel() — it cannot be scoped and will cancel our orders"
+  else
+    ok "warrior_bot's panic path cancels per-order, not globally"
   fi
 
   head_ "warrior_bot interference guard"
