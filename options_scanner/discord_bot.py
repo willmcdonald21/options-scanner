@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 
 import discord
 
@@ -42,6 +43,7 @@ from options_scanner.position_manager import PositionManager
 from options_scanner.risk import RiskGate
 from options_scanner.rules import next_level
 from options_scanner.storage import Storage
+from options_scanner.webhook import WebhookError, WebhookNotifier, redact
 
 logger = logging.getLogger("options_scanner.discord")
 
@@ -83,6 +85,16 @@ class SwiftAlertBot(discord.Client):
         self._flatten_pending_until: float = 0.0
         self._manager_task: asyncio.Task | None = None
         self._ready_once = False
+
+        # Posting transport. A webhook needs no channel permissions, so the
+        # bot's role can be misconfigured without silencing its reporting --
+        # and with synthetic stops a lost warning is the dangerous failure.
+        self._webhook: WebhookNotifier | None = None
+        if settings.discord.posts_via_webhook:
+            self._webhook = WebhookNotifier(
+                settings.discord.updates_webhook_url,
+                owner_user_id=settings.discord.owner_user_id,
+            )
 
     # --- startup -----------------------------------------------------------
 
@@ -140,6 +152,8 @@ class SwiftAlertBot(discord.Client):
             self.manager.stop()
         if self._manager_task is not None:
             self._manager_task.cancel()
+        if self._webhook is not None:
+            await self._webhook.close()
         await super().close()
 
     async def _verify_channels(self) -> None:
@@ -171,13 +185,29 @@ class SwiftAlertBot(discord.Client):
                 f"no permission to read the alerts channel {alerts_id}: {exc}"
             ) from exc
 
-        try:
-            probe = await updates.send("Starting up…")
-            await probe.delete()
-        except discord.Forbidden as exc:
-            raise StartupError(
-                f"no permission to post in the updates channel {updates_id}: {exc}"
-            ) from exc
+        if self._webhook is not None:
+            # A GET proves the webhook works and reveals its channel, without
+            # leaving a "starting up" message behind on every restart.
+            try:
+                info = await self._webhook.validate()
+            except WebhookError as exc:
+                raise StartupError(str(exc)) from exc
+            target = int(info.get("channel_id") or 0)
+            if target and target != updates_id:
+                raise StartupError(
+                    f"UPDATES_WEBHOOK_URL posts to channel {target} but UPDATES_CHANNEL_ID is "
+                    f"{updates_id}. Commands are read from the latter and updates would appear in "
+                    "the former, so they must be the same channel."
+                )
+            logger.info("posting via webhook %s", redact(self.settings.discord.updates_webhook_url))
+        else:
+            try:
+                probe = await updates.send("Starting up…")
+                await probe.delete()
+            except discord.Forbidden as exc:
+                raise StartupError(
+                    f"no permission to post in the updates channel {updates_id}: {exc}"
+                ) from exc
 
         self._alerts_channel = alerts
         self._updates_channel = updates
@@ -195,13 +225,21 @@ class SwiftAlertBot(discord.Client):
     async def post(self, note: Notification) -> None:
         """Send one notification to the updates channel, never anywhere else."""
         logger.info("notify: %s", note.to_text())
+
+        if self.pipeline.dry_run and not note.title.startswith("[DRY RUN]"):
+            # Label it on the card itself rather than only in the embed, so a
+            # dry-run message can never be mistaken for a real fill.
+            note = replace(note, title=f"[DRY RUN] {note.title}")
+
+        if self._webhook is not None:
+            await self._webhook.post(note)
+            return
+
         if self._updates_channel is None:
             return
         content = f"<@{self.settings.discord.owner_user_id}>" if note.mentions_owner else None
         try:
-            await self._updates_channel.send(
-                content=content, embed=note.to_embed(dry_run=self.pipeline.dry_run)
-            )
+            await self._updates_channel.send(content=content, embed=note.to_embed())
         except discord.HTTPException as exc:
             # Never let a failed notification take down the trading loop; the
             # log is the fallback record.
