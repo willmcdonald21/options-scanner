@@ -303,6 +303,68 @@ the real IBKR one either way.
 
 ---
 
+## Running alongside warrior_bot
+
+Both bots share one Mac, one IB Gateway and one paper account. They were written
+independently and each assumes it is alone, so the overlaps need managing.
+
+```bash
+./scripts/ops.sh doctor     # preflight — run this before every session
+./scripts/ops.sh status     # where everything stands right now
+./scripts/ops.sh restart warrior
+./scripts/ops.sh start|stop|restart scanner
+./scripts/ops.sh logs [scanner|launchd|warrior|gateway]
+```
+
+### Start order
+
+Gateway → warrior_bot → options-scanner. The scanner reconciles against the
+broker on startup; doing that on a dead session reports every position as
+missing and raises a false alarm.
+
+### What collides, and how it is handled
+
+| Risk | Mechanism | Handling |
+|---|---|---|
+| **warrior_bot flattening our options** | its reconciliation walks *every* account position every 30s and flattens anything with no resting stop. Our stops are synthetic, so it sees "uncovered". | a `secType == "STK"` filter in warrior_bot. `doctor` checks the filter is present **and** that the running process is newer than it — a process started before the patch is still running the old code. |
+| Client ID collision | IBKR refuses the second connection outright | warrior 11, scanner 12, its scripts 111/161, the probe 19. `doctor` compares them. |
+| `reqGlobalCancel()` | account-wide, not per-client; cancels our working entry limits | cannot be scoped. The phantom-exit detector @-mentions you when a position changes without one of our orders. Detection, not prevention. |
+| Market-data lines | warrior self-caps at 90; IBKR's default is 100 | we add at most `max_open_positions`. `doctor` warns if the total would exceed 100. |
+| Buying power | shared | the scanner risks at most `max_open_positions × max_usd_per_trade` |
+| Mac sleep | a sleeping Mac has no synthetic stop | `sudo pmset -c sleep 0 disksleep 0`. `doctor` fails if it is not 0. |
+| Gateway dropping | the stop silently stops working | enable **Auto restart** (not Auto logoff) in Configure → Settings → Lock and Exit. `doctor` reads Gateway's own log to tell you whether it is enabled. |
+
+The only real isolation is a **second paper account**. Everything above is
+mitigation.
+
+### Keeping the scanner up
+
+Its synthetic stop lives only inside the process, so staying up is a
+correctness requirement rather than a convenience.
+
+```bash
+cp deploy/com.willmcdonald.options-scanner.plist ~/Library/LaunchAgents/
+./scripts/ops.sh start scanner
+```
+
+`KeepAlive` restarts it on crash, throttled to 60s so a bad config produces a
+visible crash-loop rather than a frantic one. No secrets are in the plist — the
+bot loads `.env` itself, which also means it does not depend on launchd's
+stripped environment.
+
+### Market data is the gate
+
+`doctor`'s market-data check is the one that decides whether this bot can work
+at all. The trim ladder and the synthetic stop both trigger off the **bid**; no
+bid means the bot enters a position and then never trims and never stops out.
+
+Fix: Client Portal → Market Data Subscriptions → **OPRA (US Options Exchanges)
+(NP, L1)**, then Settings → Account Settings → Paper Trading Account → **share
+real-time market data with the paper account**. Both steps, or you pay and the
+paper account still returns `Error 354`.
+
+---
+
 ## Things to know before trusting it with money
 
 - **The bot must stay running.** The stop exists only in this process. If the
