@@ -67,10 +67,15 @@ class FakeIB:
             # adapter's early-return path honest.
             self._trade.orderStatus.status = "Cancelled"
 
-    def positions(self):
+    # Mirrors ib_async: a blank account means every account.
+    def positions(self, account=""):
+        if account:
+            return [p for p in self._positions if getattr(p, "account", "") == account]
         return list(self._positions)
 
-    def accountValues(self):
+    def accountValues(self, account=""):
+        if account:
+            return [v for v in self._account_values if getattr(v, "account", "") == account]
         return list(self._account_values)
 
 
@@ -321,8 +326,8 @@ async def test_status_of_an_unknown_order_is_an_error():
 # --- positions ------------------------------------------------------------
 
 
-def position(contract, qty, avg_cost):
-    return SimpleNamespace(contract=contract, position=qty, avgCost=avg_cost)
+def position(contract, qty, avg_cost, account="DU111"):
+    return SimpleNamespace(contract=contract, position=qty, avgCost=avg_cost, account=account)
 
 
 async def test_stock_positions_are_filtered_out():
@@ -376,8 +381,8 @@ async def test_a_positions_read_failure_is_wrapped():
 # --- account --------------------------------------------------------------
 
 
-def value(tag, amount, currency="USD"):
-    return SimpleNamespace(tag=tag, value=str(amount), currency=currency)
+def value(tag, amount, currency="USD", account="DU111"):
+    return SimpleNamespace(tag=tag, value=str(amount), currency=currency, account=account)
 
 
 async def test_the_account_snapshot_reads_the_usd_values():
@@ -445,3 +450,67 @@ def test_releasing_a_subscription_reaches_the_quote_layer():
 
 def test_the_adapter_names_itself_for_logs():
     assert broker().name == "ibkr"
+
+
+# --- account scoping ------------------------------------------------------
+
+
+async def test_an_order_carries_the_configured_account():
+    """IBKR rejects an order that does not name an account once the login
+    manages more than one."""
+    ib = FakeIB()
+    adapter = IBKRBroker("h", 4002, 12, quotes=FakeQuotes(ib), account="DU222")
+
+    await adapter.place_order(SPX, "BUY", 1, 0.48, timeout_seconds=1)
+
+    (_, order) = ib.placed[0]
+    assert order.account == "DU222"
+
+
+async def test_an_unconfigured_account_leaves_the_order_blank():
+    """Today's behaviour, and what IBKR assumes for a single-account login."""
+    ib = FakeIB()
+    await broker(ib).place_order(SPX, "BUY", 1, 0.48, timeout_seconds=1)
+
+    (_, order) = ib.placed[0]
+    assert order.account == ""
+
+
+async def test_positions_are_scoped_to_our_account():
+    """Another linked account's holdings must never reach the sell clamp."""
+    ib = FakeIB(positions=[
+        position(ib_contract(), 8, 48.0, account="DU222"),
+        position(ib_contract(strike=7820.0), 5, 30.0, account="DU999"),
+    ])
+    adapter = IBKRBroker("h", 4002, 12, quotes=FakeQuotes(ib), account="DU222")
+
+    held = await adapter.get_positions()
+
+    assert [p.qty for p in held] == [8]
+
+
+async def test_a_mismatched_account_on_a_position_is_refused(caplog):
+    """Belt and braces: if ib_async ever hands back a foreign row, selling
+    against it would mean selling someone else's position."""
+    ib = FakeIB()
+    # Bypass ib_async's own filter by reporting a foreign row for any query.
+    ib.positions = lambda account="": [position(ib_contract(), 8, 48.0, account="DU999")]
+    adapter = IBKRBroker("h", 4002, 12, quotes=FakeQuotes(ib), account="DU222")
+
+    with caplog.at_level("ERROR"):
+        held = await adapter.get_positions()
+
+    assert held == []
+    assert "not ours" in caplog.text
+
+
+async def test_account_values_are_scoped_too():
+    ib = FakeIB(account_values=[
+        value("NetLiquidation", 1000.0, account="DU222"),
+        value("NetLiquidation", 9999.0, account="DU999"),
+    ])
+    adapter = IBKRBroker("h", 4002, 12, quotes=FakeQuotes(ib), account="DU222")
+
+    account = await adapter.get_account()
+
+    assert account.net_liquidation == pytest.approx(1000.0)

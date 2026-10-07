@@ -5,10 +5,12 @@ This is the adapter that actually sends orders. Three things shape it:
 * **Limit orders only.** There is no code path here that builds a market order
   or a stop order. Stops are synthetic by design, and a broker-side stop on a
   0DTE option gets triggered by a bad quote on a wide spread.
-* **Options only, when reading positions.** `ib.positions()` is account-wide,
-  not per-client, and this account is shared with an equities bot. Returning
-  its stock positions would let them reach the reconciliation and exit logic,
-  so everything that is not an option is filtered out at the boundary.
+* **Scoped to one account, and options only, when reading positions.**
+  `ib.positions()` is account-wide, not per-client. Once two accounts are
+  linked under one username it returns both, so reads are filtered to this
+  bot's account; and because an account can hold more than one instrument type,
+  everything that is not an option is filtered out as well. Either filter alone
+  would be enough today, and neither is enough on its own forever.
 * **No guessing.** A contract that resolves ambiguously, an order whose state
   cannot be read, a position whose OCC symbol cannot be reconstructed: each
   raises rather than returning a plausible-looking value, because every one of
@@ -66,6 +68,7 @@ class IBKRBroker(Broker):
         market_data_type: int = 1,
         on_no_market_data=None,
         quotes: IBKRQuotes | None = None,
+        account: str = "",
     ):
         self._quotes = quotes or IBKRQuotes(
             host,
@@ -74,6 +77,9 @@ class IBKRBroker(Broker):
             market_data_type=market_data_type,
             on_no_market_data=on_no_market_data,
         )
+        # Empty means "whatever the login manages", which is both ib_async's and
+        # IBKR's own behaviour for a single-account login.
+        self._account = account.strip()
         self._trades: dict[str, object] = {}
 
     @property
@@ -141,6 +147,10 @@ class IBKRBroker(Broker):
         order = LimitOrder(side, qty, round_price(limit_price))
         order.tif = _TIF
         order.outsideRth = False
+        # Naming the account is mandatory once the login manages more than one;
+        # IBKR rejects the order otherwise. Left blank it means the only account,
+        # which is what IBKR assumes anyway.
+        order.account = self._account
         # Belt and braces: if a future change ever reached this function with
         # something other than a limit, it must not silently become one.
         if order.orderType != "LMT":
@@ -247,14 +257,16 @@ class IBKRBroker(Broker):
     # --- account -----------------------------------------------------------
 
     async def get_positions(self) -> list[BrokerPosition]:
-        """Option positions only.
+        """This account's option positions, and nothing else.
 
-        `ib.positions()` is account-wide. This account is shared with an
-        equities bot, and letting its stock positions through would feed them
-        straight into reconciliation and the sell clamp.
+        Two filters, because each covers a case the other does not. The account
+        filter keeps another linked account's holdings out once a second account
+        exists. The secType filter keeps non-options out of a single account that
+        happens to hold both. Letting either through would feed positions we do
+        not manage into reconciliation and the sell clamp.
         """
         try:
-            raw = self._ib.positions()
+            raw = self._ib.positions(account=self._account)
         except Exception as exc:
             raise BrokerError(f"could not read positions: {exc}") from exc
 
@@ -262,6 +274,15 @@ class IBKRBroker(Broker):
         for item in raw:
             contract = getattr(item, "contract", None)
             if contract is None or getattr(contract, "secType", "") != "OPT":
+                continue
+            # Belt and braces: ib_async already filtered, but a mismatch here
+            # would mean selling against a position in someone else's account.
+            holder = getattr(item, "account", "") or ""
+            if self._account and holder and holder != self._account:
+                logger.error(
+                    "ignoring a %s position reported under account %s, not ours (%s)",
+                    getattr(contract, "symbol", "?"), holder, self._account,
+                )
                 continue
             qty = int(getattr(item, "position", 0) or 0)
             if qty == 0:
@@ -285,7 +306,7 @@ class IBKRBroker(Broker):
 
     async def get_account(self) -> AccountSnapshot:
         try:
-            values = self._ib.accountValues()
+            values = self._ib.accountValues(account=self._account)
         except Exception as exc:
             raise BrokerError(f"could not read account values: {exc}") from exc
 
