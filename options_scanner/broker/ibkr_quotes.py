@@ -50,11 +50,13 @@ class IBKRQuotes:
         *,
         market_data_type: int = 1,
         on_no_market_data=None,
+        account: str = "",
     ):
         self.host = host
         self.port = port
         self.client_id = client_id
         self.market_data_type = market_data_type
+        self.account = (account or "").strip()
         self._on_no_market_data = on_no_market_data
         self._ib = None
         self._qualified: dict[str, object] = {}
@@ -80,10 +82,45 @@ class IBKRQuotes:
                 "(warrior_bot holds 11 on this account.)"
             ) from exc
         self._ib.reqMarketDataType(self.market_data_type)
+        self._check_account()
         logger.info(
-            "connected to IB %s:%s as client %s (market data type %s)",
-            self.host, self.port, self.client_id, self.market_data_type,
+            "connected to IB %s:%s as client %s, account %s (market data type %s)",
+            self.host, self.port, self.client_id, self.account or "(the only one)",
+            self.market_data_type,
         )
+
+    def _check_account(self) -> None:
+        """Refuse to run against an ambiguous or wrong account.
+
+        Three failures are worth catching here rather than later:
+
+        * More than one account managed and none configured. IBKR rejects every
+          order in that state, and an unscoped position read would return the
+          other bot's holdings. Failing at connect beats discovering it on the
+          first alert of the day.
+        * A configured account the login does not actually manage -- a typo, or a
+          paper id pasted from the wrong place.
+        * Only one account managed but a different one configured, which means
+          the config is describing a setup that does not exist.
+        """
+        managed = [a for a in (self._ib.managedAccounts() or []) if a]
+        if not managed:
+            logger.warning("IB reported no managed accounts; cannot verify the account setting")
+            return
+
+        if self.account and self.account not in managed:
+            raise BrokerError(
+                f"configured account {self.account!r} is not managed by this login "
+                f"(it manages {', '.join(managed)}). Check broker.account in config.yaml."
+            )
+
+        if not self.account and len(managed) > 1:
+            raise BrokerError(
+                f"this login manages {len(managed)} accounts ({', '.join(managed)}) but "
+                "broker.account is blank. IBKR rejects orders that do not name an account "
+                "when more than one is managed, and an unscoped position read would return "
+                "the other account's holdings. Set broker.account in config.yaml."
+            )
 
     async def disconnect(self) -> None:
         if self._ib is not None and self._ib.isConnected():

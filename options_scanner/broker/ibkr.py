@@ -76,6 +76,7 @@ class IBKRBroker(Broker):
             client_id,
             market_data_type=market_data_type,
             on_no_market_data=on_no_market_data,
+            account=account,
         )
         # Empty means "whatever the login manages", which is both ib_async's and
         # IBKR's own behaviour for a single-account login.
