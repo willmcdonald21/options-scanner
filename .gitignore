@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .env
+.env.bak*
 data/*.sqlite3
 data/*.log
 .pytest_cache/
