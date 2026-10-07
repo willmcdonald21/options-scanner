@@ -1,0 +1,73 @@
+# All tunables live here. Secrets (Discord token, channel and user IDs) come
+# from .env and are never read from this file -- see .env.example.
+#
+# dry_run : decide and report, send nothing to the broker
+# paper   : trade the paper account
+# live    : real money; also requires live_confirmed below AND a typed
+#           confirmation at startup
+mode: dry_run
+live_confirmed: false
+
+entry:
+  # Limit orders only. Start at the alert's entry price and walk up toward
+  # the cap in this many steps; cancel rather than chase past it.
+  max_slippage_pct: 10          # 0DTE spreads are often 5-10% of price
+  fill_timeout_seconds: 30
+  limit_walk_steps: 3
+  skip_if_ask_above_cap: true   # the move went without us; don't chase
+  duplicate_window_seconds: 900  # same contract+entry inside this = a re-paste
+
+trim:
+  # [profit level %, percent of the REMAINING position to sell]
+  # +100% carries 0 on purpose: the runner rides the trail from there.
+  schedule:
+    - [25, 25]
+    - [50, 25]
+    - [75, 25]
+    - [100, 0]
+  min_runner_contracts: 1
+
+trail:
+  arm_at_pct: 75        # the trail starts working here
+  giveback_pct: 60      # stop = entry + 0.40 * (peak - entry)
+
+stops:
+  # Synthetic, bot-managed. Broker-side stops are not used: a wide 0DTE
+  # spread triggers them on bad quotes.
+  source_blend: 0.0         # 0 = pure bid (what we can actually sell into)
+  confirm_polls: 2          # consecutive quotes below the stop before exiting
+  poll_seconds: 1.5
+  stale_quote_seconds: 15   # no quotes means no stop -- shout, don't drift
+  exit_through_pct: 2.0     # exits price this % through the bid so they fill
+  exit_retries: 3           # then escalate: an exit that won't fill must not stay quiet
+
+risk:
+  max_usd_per_trade: 1000
+  max_contracts_per_trade: 50   # drop to 1 for the first live sessions
+  max_open_positions: 3
+  max_daily_loss_usd: 1000
+  max_trades_per_day: 10
+
+market:
+  entry_cutoff: "15:30"             # no new entries after this (ET)
+  force_exit_enabled: false         # your call; a runner can expire worthless
+  force_exit_time: "15:50"
+  near_close_warning_minutes: 15    # warn about open runners near the bell
+
+broker:
+  # simulated = fills simulated locally against REAL IBKR quotes; nothing is
+  #             sent to the broker. The safe default.
+  # ibkr      = real orders to whatever account the port points at. On 4002
+  #             that is the paper account, but it is still a real order path.
+  kind: simulated
+  host: 127.0.0.1
+  port: 4002        # Gateway paper. 4001/7496 are live and are refused here.
+  client_id: 12     # must be unique per client; warrior_bot holds 11
+  market_data_type: 1
+
+storage:
+  db_path: data/options_scanner.sqlite3
+
+logging:
+  level: INFO
+  file: logs/options_scanner.log
