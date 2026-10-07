@@ -68,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mode      : {settings.mode.value}")
         print(f"broker    : {settings.broker.kind.value} -> "
               f"{settings.broker.host}:{settings.broker.port} client {settings.broker.client_id}")
+        print(f"account   : {settings.broker.account or '(whatever the login manages)'}")
         print(f"session   : {describe_session()}")
         print(f"summary   : {settings.summary_line()}")
         print(f"database  : {settings.resolve_path(settings.storage.db_path)}")
@@ -117,15 +118,20 @@ def build_broker(settings: Settings) -> Broker | None:
             settings.broker.client_id,
             market_data_type=settings.broker.market_data_type,
             on_no_market_data=report,
+            account=settings.broker.account,
         )
-        logger.info("broker: simulated fills over real IBKR quotes")
+        logger.info(
+            "broker: simulated fills over real IBKR quotes (account %s)",
+            settings.broker.account or "(the only one)",
+        )
         return PaperBroker(quotes)
 
     logger.warning(
-        "broker: REAL IBKR orders to %s:%s as client %s",
+        "broker: REAL IBKR orders to %s:%s as client %s, account %s",
         settings.broker.host,
         settings.broker.port,
         settings.broker.client_id,
+        settings.broker.account or "(the only one)",
     )
     return IBKRBroker(
         settings.broker.host,
@@ -133,6 +139,7 @@ def build_broker(settings: Settings) -> Broker | None:
         settings.broker.client_id,
         market_data_type=settings.broker.market_data_type,
         on_no_market_data=report,
+        account=settings.broker.account,
     )
 
 
