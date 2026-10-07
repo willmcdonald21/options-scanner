@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keeps options-scanner running. Its synthetic stop exists only inside the
+  process, so "always up" is a correctness requirement rather than a
+  convenience: if the process dies, an open position has no stop at all.
+
+  Install:
+    cp deploy/com.willmcdonald.options-scanner.plist ~/Library/LaunchAgents/
+    ./scripts/ops.sh start scanner
+
+  No secrets live here. The bot loads .env itself via load_dotenv, which also
+  means it does not depend on launchd's stripped environment.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.willmcdonald.options-scanner</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/willmcdonald/Developer/options-scanner/.venv/bin/python</string>
+        <string>-m</string>
+        <string>options_scanner.main</string>
+    </array>
+
+    <!-- The bot resolves config.yaml, .env and data/ relative to the repo. -->
+    <key>WorkingDirectory</key>
+    <string>/Users/willmcdonald/Developer/options-scanner</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!--
+      A bad config makes the bot exit at startup by design (StartupError when a
+      channel is unreachable, or a validation error). Without a throttle launchd
+      would spin on that; 60s keeps a crash-loop visible rather than frantic.
+      `ops.sh doctor` reports a non-zero last exit status.
+    -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/willmcdonald/Developer/options-scanner/logs/launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/willmcdonald/Developer/options-scanner/logs/launchd.err</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- launchd gives a process almost no PATH; keep it predictable. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <!-- Nice-to-have: don't let a stalled bot be killed for being idle. -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>
