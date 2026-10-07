@@ -56,11 +56,18 @@ async def probe(host: str, port: int, client_id: int, quote_check: bool) -> int:
     try:
         accounts = ib.managedAccounts()
         emit("account", ",".join(accounts) or "unknown")
-        # DU/DF prefixes are IBKR's paper accounts. Worth asserting rather than
-        # assuming the port implies it.
-        emit("is_paper", "yes" if accounts and accounts[0].startswith(("DU", "DF")) else "no")
+        emit("accounts_count", len(accounts))
+        # One line per account, so a linked pair can be told apart when picking
+        # which bot gets which. DU/DF prefixes are IBKR's paper accounts, worth
+        # asserting rather than inferring from the port.
+        for index, name in enumerate(accounts):
+            emit(f"account_{index}", f"{name} paper={'yes' if name.startswith(('DU', 'DF')) else 'no'}")
+        # Every account must be paper; one live account in the list is enough to
+        # make the whole connection dangerous.
+        emit("is_paper", "yes" if accounts and all(a.startswith(("DU", "DF")) for a in accounts) else "no")
 
         options = stocks = 0
+        per_account: dict[str, int] = {}
         for item in ib.positions():
             if item.position == 0:
                 continue
@@ -68,9 +75,15 @@ async def probe(host: str, port: int, client_id: int, quote_check: bool) -> int:
                 options += 1
             else:
                 stocks += 1
+            holder = getattr(item, "account", "") or "unknown"
+            per_account[holder] = per_account.get(holder, 0) + 1
         emit("positions_total", options + stocks)
         emit("positions_opt", options)
         emit("positions_stk", stocks)
+        # Which account holds what, so the isolation can be seen rather than
+        # assumed once the bots are split.
+        for name, count in sorted(per_account.items()):
+            emit(f"positions_in_{name}", count)
         emit("flat", "yes" if options + stocks == 0 else "no")
 
         trades = [t for t in ib.openTrades() if not t.orderStatus.status.startswith("Cancel")]
