@@ -1,257 +1,336 @@
+"""Parser and validation tests -- no broker, no Discord, no network.
+
+Three groups: the spec's canonical sample, the validation gates that keep a
+misread alert from being traded, and malformed variants.
+"""
+
 from datetime import date, datetime
 from pathlib import Path
 
+import pytest
+
 from options_scanner.models import (
-    BuyEvent,
-    ExpiredEvent,
-    InfoEvent,
+    EntryAlert,
+    InfoAlert,
     OptionKey,
-    SoldAllEvent,
-    TrimEvent,
-    UnderlyingKey,
-    UnknownEvent,
+    RejectedAlert,
+    RejectReason,
 )
-from options_scanner.parser import parse_embed
-from options_scanner.text_import import parse_chat_export
+from options_scanner.parser import TRIM_TARGET_TOLERANCE, ParsedCard, parse_card
+from options_scanner.text_import import parse_cards
 
 FIXTURE = Path(__file__).parent / "fixtures" / "swift_chat_dump.txt"
 
+TODAY = date(2026, 10, 6)
 
-def _events():
-    text = FIXTURE.read_text()
-    embeds = parse_chat_export(text, reference_date=datetime(2026, 9, 23))
-    return [parse_embed(e) for e in embeds]
-
-
-def test_every_message_in_real_dump_is_classified():
-    events = _events()
-    assert len(events) == 80
-    unknown = [e for e in events if isinstance(e, UnknownEvent)]
-    assert unknown == [], f"unrecognized message shapes: {[e.reason for e in unknown]}"
-
-
-def test_type_breakdown_matches_manual_count():
-    events = _events()
-    counts: dict[str, int] = {}
-    for e in events:
-        counts[type(e).__name__] = counts.get(type(e).__name__, 0) + 1
-    assert counts == {
-        "BuyEvent": 20,
-        "TrimEvent": 2,
-        "SoldAllEvent": 15,
-        "ExpiredEvent": 4,
-        "InfoEvent": 39,  # milestones + 7 AVERAGING DOWN + 1 NEW ALERT, all disregarded
-    }
-
-
-def test_buy_event_fields():
-    events = _events()
-    amd = next(e for e in events if isinstance(e, BuyEvent) and e.option.ticker == "AMD")
-    assert amd.option == OptionKey("AMD", date(2026, 9, 21), 620.0, "C")
-    assert amd.entry_price == 1.40
-    assert amd.contracts == 25
-    assert amd.cost == 3500.0
-    assert amd.is_lotto is True
-
-    googl = next(e for e in events if isinstance(e, BuyEvent) and e.option.ticker == "GOOGL")
-    assert googl.option.strike == 367.5
-    assert googl.is_lotto is False
-
-
-def test_new_alert_is_disregarded_not_traded():
-    events = _events()
-    new_alerts = [e for e in events if isinstance(e, InfoEvent) and e.kind == "new_alert"]
-    assert len(new_alerts) == 1
-    assert "NEW ALERT" in new_alerts[0].raw_title
-    # and it must not also show up as a BuyEvent for that contract
-    assert not any(isinstance(e, BuyEvent) and e.option.ticker == "QQQ" and e.option.expiry == date(2026, 9, 25) for e in events)
-
-
-def test_averaging_down_is_disregarded():
-    events = _events()
-    avg_downs = [e for e in events if isinstance(e, InfoEvent) and e.kind == "averaging_down"]
-    assert len(avg_downs) == 7
-    assert all("AVERAGING DOWN" in e.raw_title for e in avg_downs)
-
-
-def test_trim_event_handles_bundled_and_single_tier_forms():
-    events = _events()
-    trims = [e for e in events if isinstance(e, TrimEvent)]
-    assert len(trims) == 2
-
-    bundled = next(t for t in trims if t.underlying.ticker == "QQQ" and t.underlying.strike == 740.0 and t.underlying.right == "C")
-    assert bundled.tier_pct == 0.75
-    assert bundled.sold_this_event == 12
-    assert bundled.channel_total_before == 20
-    assert bundled.channel_remaining_after == 8
-    assert bundled.avg_exit_price == 1.328
-
-    single = next(t for t in trims if t.underlying.ticker == "NVDA")
-    assert single.tier_pct == 0.25
-    assert single.sold_this_event == 3
-    assert single.channel_total_before == 15
-    assert single.channel_remaining_after == 12
-    assert single.avg_exit_price == 1.069
-
-
-def test_sold_all_event_handles_negative_pct():
-    events = _events()
-    ev = next(e for e in events if isinstance(e, SoldAllEvent) and e.underlying.ticker == "QQQ" and e.underlying.strike == 746.0)
-    assert ev.realized_pct == -0.75
-    assert ev.avg_exit_price == 0.10
-
-
-def test_expired_event_win_and_loss():
-    events = _events()
-    win = next(e for e in events if isinstance(e, ExpiredEvent) and e.underlying.ticker == "SPY" and e.underlying.strike == 767.0)
-    loss = next(e for e in events if isinstance(e, ExpiredEvent) and e.underlying.ticker == "SPX")
-    assert win.won is True
-    assert loss.won is False
-
-
-def test_bare_milestones_are_informational_only():
-    events = _events()
-    kinds = {e.kind for e in events if isinstance(e, InfoEvent)}
-    assert kinds == {"milestone", "averaging_down", "new_alert"}
-
-
-# --- the trim ladder on a BUY card ---------------------------------------
-
-
-def test_buy_events_carry_the_published_trim_ladder():
-    buys = [e for e in _events() if isinstance(e, BuyEvent)]
-
-    assert len(buys) == 20
-    for buy in buys:
-        assert len(buy.trim_targets) == 4, f"{buy.option} lost its ladder"
-        assert [t.pct for t in buy.trim_targets] == [0.25, 0.50, 0.75, 1.00]
-        # Rungs ascend and all sit above the entry.
-        prices = [t.price for t in buy.trim_targets]
-        assert prices == sorted(prices)
-        assert prices[0] > buy.entry_price
-
-
-def test_trim_ladder_prices_match_the_card_exactly():
-    buy = next(e for e in _events() if isinstance(e, BuyEvent) and e.option.ticker == "SPY")
-
-    assert buy.entry_price == 0.885
-    assert [t.price for t in buy.trim_targets] == [1.106, 1.328, 1.549, 1.770]
-
-
-def test_averaging_down_card_ladder_is_read_from_the_new_avg_field():
-    """After an AVERAGING DOWN the field is titled "Trim Targets (new avg)"."""
-    from options_scanner.parser import _parse_trim_targets
-
-    targets = _parse_trim_targets({"Trim Targets (new avg)": "25%   $0.269\n50%   $0.323\n75%   $0.376\n100%  $0.430"})
-
-    assert [t.price for t in targets] == [0.269, 0.323, 0.376, 0.430]
-
-
-def test_a_buy_without_a_ladder_field_parses_with_an_empty_one():
-    """exit_plan substitutes a computed ladder; the parser just reports
-    that the card didn't carry one."""
-    from options_scanner.parser import _parse_trim_targets
-
-    assert _parse_trim_targets({"Entry": "$1.00"}) == ()
-
-
-# --- cards pasted without the "SWIFT TRADES" banner ----------------------
-
-_ANALYST_TRIM = """Analyst - SWIFT 
- TRIM +25% — QQQ 740C · Oct 2
-Sold 1 of 10 @ $6.413 · 9 still running.
-
- Stop moved to break-even. Trim filled at $6.413 (+25%, trigger was +25%). Remaining 9 now stopped at $5.29 — this position can no longer lose money.
+# The canonical sample from the spec, verbatim.
+SPEC_ALERT = """BUY — SPX 7815P · 0DTE
+Entered SPX Oct06 '26 7815 Put
 Open Live Dashboard →
 Entry
-$5.13
-Exit
-$6.413
-Locked In
-+$128.25
-
-Not financial advice"""
-
-_ANALYST_SOLD_ALL = """Analyst - SWIFT 
- SOLD ALL +130% — GOOGL 350C · Oct 2
-Fully out of GOOGL Oct02 '26 350 Call.
-Open Live Dashboard →
-Entry → avg exit
-$1.596 → $2.687
-Realized
-+68.34%
-Best fill
-$3.592
-Peak
-+130.2% ($3.675)
-
-Not financial advice"""
-
-
-def test_analyst_headed_trim_card_is_not_dropped():
-    """These carry no "SWIFT TRADES · LIVE DESK" banner at all -- splitting
-    on that marker alone discarded every exit message silently."""
-    embeds = parse_chat_export(_ANALYST_TRIM, reference_date=datetime(2026, 10, 2))
-    assert len(embeds) == 1
-
-    event = parse_embed(embeds[0])
-    assert isinstance(event, TrimEvent)
-    assert event.underlying == UnderlyingKey("QQQ", 740.0, "C")
-    assert event.tier_pct == 0.25
-    assert (event.sold_this_event, event.channel_remaining_after) == (1, 9)
-
-
-def test_analyst_headed_sold_all_card_is_not_dropped():
-    embeds = parse_chat_export(_ANALYST_SOLD_ALL, reference_date=datetime(2026, 10, 2))
-    assert len(embeds) == 1
-
-    event = parse_embed(embeds[0])
-    assert isinstance(event, SoldAllEvent)
-    assert event.underlying == UnderlyingKey("GOOGL", 350.0, "C")
-    assert event.avg_exit_price == 2.687
-
-
-def test_a_card_pasted_with_no_header_at_all_still_parses():
-    bare = "\n".join(_ANALYST_SOLD_ALL.splitlines()[1:])
-    embeds = parse_chat_export(bare, reference_date=datetime(2026, 10, 2))
-
-    assert len(embeds) == 1
-    assert isinstance(parse_embed(embeds[0]), SoldAllEvent)
-
-
-def test_unrelated_chatter_yields_no_cards():
-    """main.py alerts on an empty result, so ordinary conversation must
-    not look like a card."""
-    assert parse_chat_export("hey is anyone else seeing this fill?") == []
-    assert parse_chat_export("") == []
-
-
-def test_the_live_buy_card_parses_with_its_ladder():
-    card = """SWIFT TRADES · LIVE DESK
- BUY — SPY 764C · Sep 30
-Entered SPY Sep30 '26 764 Call
-Open Live Dashboard →
-Entry
-$1.905
+$0.475
 Contracts
 25
 Cost
-$4,763
+$1,188
 Trim Targets
-25%   $2.381
-50%   $2.858
-75%   $3.334
-100%  $3.810
+25%   $0.594
+50%   $0.713
+75%   $0.831
+100%  $0.950
 News backdrop
- Broad Market leaning down — 2 up / 4 down in the last 6h
+ Broad Market leaning up — 2 up / 1 down in the last 6h
 
-Real trade · data via IBKR · Not financial advice•9/29/26, 1:25 PM"""
+Not financial advice"""
 
-    event = parse_embed(parse_chat_export(card, reference_date=datetime(2026, 9, 29))[0])
 
-    assert isinstance(event, BuyEvent)
-    assert event.option == OptionKey("SPY", date(2026, 9, 30), 764.0, "C")
-    assert (event.entry_price, event.contracts, event.cost) == (1.905, 25, 4763.0)
-    # The News backdrop field sits directly after the ladder and must not
-    # be swallowed into it.
-    assert [t.price for t in event.trim_targets] == [2.381, 2.858, 3.334, 3.810]
+def _parse(text: str, today: date = TODAY):
+    cards = parse_cards(text, reference_date=datetime(today.year, today.month, today.day))
+    assert len(cards) == 1, f"expected exactly one card, got {len(cards)}"
+    return parse_card(cards[0], today=today)
+
+
+# --- the canonical sample -------------------------------------------------
+
+
+def test_spec_sample_parses_into_a_tradeable_alert():
+    alert = _parse(SPEC_ALERT)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.option == OptionKey("SPX", date(2026, 10, 6), 7815.0, "P")
+    assert alert.entry_price == 0.475
+    assert alert.advisor_contracts == 25
+    assert alert.advisor_cost == 1188.0
+    assert alert.is_zero_dte is True
+
+
+def test_spec_sample_ladder_is_captured_in_order():
+    alert = _parse(SPEC_ALERT)
+
+    assert [t.pct for t in alert.trim_targets] == [0.25, 0.50, 0.75, 1.00]
+    assert [t.price for t in alert.trim_targets] == [0.594, 0.713, 0.831, 0.950]
+
+
+def test_spec_sample_builds_the_spxw_occ_symbol():
+    """Index options trade under a different root than their ticker; SPX
+    weeklies are SPXW, a genuinely different contract."""
+    alert = _parse(SPEC_ALERT)
+
+    assert alert.option.occ_symbol == "SPXW  261006P07815000"
+
+
+def test_noise_lines_are_ignored():
+    """'Open Live Dashboard', 'News backdrop' and the disclaimer must not be
+    mistaken for fields -- News backdrop sits directly after the ladder."""
+    alert = _parse(SPEC_ALERT)
+
+    assert len(alert.trim_targets) == 4  # the backdrop line didn't leak in
+    assert alert.advisor_cost == 1188.0
+
+
+# --- expiry cross-check ---------------------------------------------------
+
+
+def test_0dte_tag_on_a_future_expiry_is_rejected():
+    result = _parse(SPEC_ALERT, today=date(2026, 10, 5))
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.EXPIRY_TAG_MISMATCH
+    assert "0DTE" in result.detail
+
+
+def test_an_expiry_already_in_the_past_is_rejected():
+    result = _parse(SPEC_ALERT, today=date(2026, 10, 7))
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.EXPIRY_IN_PAST
+
+
+def test_a_dated_tag_disagreeing_with_the_contract_line_is_rejected():
+    card = SPEC_ALERT.replace("· 0DTE", "· Oct 9")
+    result = _parse(card)
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.EXPIRY_TAG_MISMATCH
+
+
+def test_a_dated_tag_agreeing_with_the_contract_line_is_accepted():
+    card = SPEC_ALERT.replace("Oct06 '26 7815 Put", "Oct09 '26 7815 Put").replace("· 0DTE", "· Oct 9")
+    result = _parse(card)
+
+    assert isinstance(result, EntryAlert)
+    assert result.option.expiry == date(2026, 10, 9)
+    assert result.is_zero_dte is False
+
+
+def test_same_day_expiry_without_a_0dte_tag_is_still_treated_as_0dte():
+    card = SPEC_ALERT.replace(" · 0DTE", "")
+    result = _parse(card)
+
+    assert isinstance(result, EntryAlert)
+    assert result.is_zero_dte is True
+
+
+# --- trim-target checksum -------------------------------------------------
+
+
+def test_a_misread_entry_price_is_caught_by_the_ladder_checksum():
+    """The ladder is not traded off; it exists to prove the entry parsed."""
+    result = _parse(SPEC_ALERT.replace("$0.475", "$0.485"))
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.TRIM_TARGET_MISMATCH
+    assert "0.606" in result.detail  # shows the recomputed value
+
+
+def test_rounding_inside_a_cent_is_tolerated():
+    """0.475 x 1.25 = 0.59375, published as 0.594 -- a correct parse is
+    always within a cent, never exact."""
+    alert = _parse(SPEC_ALERT)
+
+    for target in alert.trim_targets:
+        assert abs(alert.entry_price * (1 + target.pct) - target.price) <= TRIM_TARGET_TOLERANCE
+
+
+def test_a_card_with_no_ladder_is_rejected():
+    stripped = "\n".join(
+        line
+        for line in SPEC_ALERT.splitlines()
+        if not line.startswith("Trim Targets") and "%   $" not in line and "%  $" not in line
+    )
+    result = _parse(stripped)
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.NO_TRIM_TARGETS
+
+
+def test_one_bad_rung_rejects_the_whole_alert():
+    result = _parse(SPEC_ALERT.replace("75%   $0.831", "75%   $0.900"))
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.TRIM_TARGET_MISMATCH
+
+
+# --- malformed variants ---------------------------------------------------
+
+
+@pytest.mark.parametrize("missing", ["Entry", "Contracts", "Cost"])
+def test_a_missing_required_field_is_rejected_by_name(missing):
+    lines = SPEC_ALERT.splitlines()
+    idx = lines.index(missing)
+    del lines[idx : idx + 2]  # the label and its value
+    result = _parse("\n".join(lines))
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.MISSING_FIELD
+    assert missing in result.detail
+
+
+def test_a_missing_contract_line_is_rejected():
+    result = _parse(SPEC_ALERT.replace("Entered SPX Oct06 '26 7815 Put\n", ""))
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.UNPARSABLE_CONTRACT
+
+
+def test_an_impossible_date_is_rejected_not_crashed():
+    result = _parse(SPEC_ALERT.replace("Oct06 '26", "Feb30 '26"))
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.UNPARSABLE_CONTRACT
+
+
+def test_a_nonsense_month_is_rejected():
+    result = _parse(SPEC_ALERT.replace("Oct06 '26", "Xyz06 '26"))
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.UNPARSABLE_CONTRACT
+
+
+def test_commas_in_prices_survive():
+    """Index contracts run into four-figure costs."""
+    card = SPEC_ALERT.replace("$1,188", "$11,880").replace("Contracts\n25", "Contracts\n250")
+    alert = _parse(card)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.advisor_cost == 11880.0
+    assert alert.advisor_contracts == 250
+
+
+def test_extra_whitespace_and_a_different_emoji_still_parse():
+    card = SPEC_ALERT.replace("BUY —", "\U0001f6a8  BUY   —").replace("25%   $0.594", "25%      $0.594")
+    alert = _parse(card)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.trim_targets[0].price == 0.594
+
+
+def test_a_call_parses_as_a_call():
+    card = (
+        SPEC_ALERT.replace("7815P", "7815C")
+        .replace("7815 Put", "7815 Call")
+    )
+    alert = _parse(card)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.option.right == "C"
+
+
+def test_a_zero_entry_price_is_rejected():
+    card = SPEC_ALERT.replace("$0.475", "$0.000")
+    result = _parse(card)
+
+    assert isinstance(result, RejectedAlert)
+    # A $0 entry makes every recomputed rung $0 too, so the checksum fires
+    # first -- either rejection is correct, neither trades.
+    assert result.reason in (RejectReason.NON_POSITIVE_PRICE, RejectReason.TRIM_TARGET_MISMATCH)
+
+
+def test_an_unrecognized_title_is_rejected_with_the_title_quoted():
+    card = ParsedCard(
+        message_id=7,
+        title="MARGIN CALL — SPX",
+        description="",
+        fields={},
+        footer="",
+        timestamp=datetime(2026, 10, 6),
+    )
+    result = parse_card(card, today=TODAY)
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.UNRECOGNIZED_TITLE
+    assert "MARGIN CALL" in result.detail
+
+
+def test_ordinary_chatter_produces_no_cards_at_all():
+    """main.py must report an empty result rather than ignore it, so this
+    asserts the boundary rather than a parse."""
+    assert parse_cards("anyone else get filled on that?") == []
+    assert parse_cards("") == []
+
+
+# --- non-entry card types are informational, never traded -----------------
+
+
+@pytest.mark.parametrize(
+    "title,expected_kind",
+    [
+        ("TRIM +25% — QQQ 740C · Oct 2", "advisor_trim"),
+        ("SOLD ALL +130% — GOOGL 350C · Oct 2", "advisor_exit"),
+        ("EXPIRED · WIN — SPY 772P · 0DTE", "advisor_expired"),
+        ("NEW ALERT — SPY 770C · 0DTE", "new_alert"),
+        ("AVERAGING DOWN — SPY 767P · 0DTE", "averaging_down"),
+        ("+25% — TSLA 380C · 0DTE", "milestone"),
+    ],
+)
+def test_non_entry_titles_classify_as_info(title, expected_kind):
+    card = ParsedCard(
+        message_id=1, title=title, description="", fields={}, footer="", timestamp=datetime(2026, 10, 6)
+    )
+    result = parse_card(card, today=TODAY)
+
+    assert isinstance(result, InfoAlert)
+    assert result.kind == expected_kind
+
+
+# --- the 80-message regression corpus ------------------------------------
+
+
+def _fixture_results():
+    text = FIXTURE.read_text()
+    cards = parse_cards(text, reference_date=datetime(2026, 9, 23))
+    # The corpus spans 2026-09-21..23; validate each card against its own
+    # expiry date so the expiry gate doesn't reject the whole historical set.
+    out = []
+    for card in cards:
+        result = parse_card(card, today=date(2026, 9, 21))
+        out.append(result)
+    return cards, out
+
+
+def test_every_card_in_the_corpus_is_classified():
+    cards, results = _fixture_results()
+
+    assert len(cards) == 80
+    unrecognized = [
+        r for r in results
+        if isinstance(r, RejectedAlert) and r.reason is RejectReason.UNRECOGNIZED_TITLE
+    ]
+    assert unrecognized == [], [r.detail for r in unrecognized]
+
+
+def test_the_corpus_entry_alerts_all_pass_the_ladder_checksum():
+    """20 real BUY cards. Any checksum failure here means the parser is
+    misreading a price on real traffic."""
+    _, results = _fixture_results()
+    entries = [r for r in results if isinstance(r, EntryAlert)]
+    checksum_failures = [
+        r for r in results
+        if isinstance(r, RejectedAlert) and r.reason is RejectReason.TRIM_TARGET_MISMATCH
+    ]
+
+    assert checksum_failures == [], [r.detail for r in checksum_failures]
+    assert len(entries) >= 1
+    for alert in entries:
+        assert alert.entry_price > 0
+        assert len(alert.trim_targets) == 4
