@@ -195,6 +195,33 @@ halted rather than quietly resuming on its own.
 Everything goes to the updates channel. The alerts channel only ever receives a
 reaction — the bot never posts text there.
 
+Updates are shaped like the alert cards you paste in, so they read the same at a
+glance:
+
+```
+TRIM +25% — SPX 7815P · 0DTE
+Sold 6 of 21 @ $0.62 · 15 still running.
+Stop moved to break-even at 0.48 — the remaining 15 can no longer lose money.
+Entry        Exit         Locked In
+$0.48        $0.62        +$84.00
+```
+
+Two deliberate differences from the advisor's cards: the `Trim Targets` block on
+an entry card is recomputed off **our** fill, not the entry the card advertised,
+and the footer names this bot so a card of ours can never be mistaken for one of
+theirs.
+
+### Posting transport
+
+Set `UPDATES_WEBHOOK_URL` in `.env` and updates go through that webhook, which
+needs no channel permissions at all — a misconfigured bot role then cannot
+silence the bot's reporting. Leave it blank and the bot posts directly.
+
+Either way the **bot token is still required**: a webhook cannot read, and the
+bot has to read the alerts channel and the commands you type in updates. The
+webhook must point at the same channel as `UPDATES_CHANNEL_ID`, and startup
+refuses to run if it does not.
+
 - 🟩 green — profit events (fill, trim, stop raised)
 - 🟥 red — stops hit at a loss, errors
 - 🟨 yellow — warnings, skipped and rejected alerts
