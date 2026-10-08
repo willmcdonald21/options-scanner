@@ -153,3 +153,87 @@ login and are acceptable.
 - [Linked Accounts (glossary)](https://www.interactivebrokers.com/campus/glossary-terms/linked-accounts/)
 - [Link Existing Account Scenarios](https://www.interactivebrokers.com/en/trading/linked-accounts.php)
 - [Requesting a Paper Trading Account](https://www.interactivebrokers.com/campus/trading-lessons/request-paper-trading-account/)
+
+---
+
+# When the account is approved
+
+The code in both repos is already in place and inert. Blank accounts mean
+"whatever the login manages", which is correct for one account. Switching over
+is two config lines and a verification.
+
+### 1. Confirm the paper account exists and has option permissions
+
+```bash
+cd ~/Developer/options-scanner
+.venv/bin/python scripts/ib_probe.py            # one account_N= line per account
+```
+
+Both paper accounts should be listed with `paper=yes`. If only one appears, the
+new live account is activated but its paper mirror has not been created yet —
+that is an IBKR-side wait, not a config problem.
+
+Then confirm option permissions landed on the **new** account (A4 above). Paper
+mirrors the live account's permissions, so this is the step that silently breaks
+everything else.
+
+### 2. Decide which account each bot gets
+
+The options account is the **new** one; warrior_bot keeps the existing
+`DUR662028`, because it has the position history and the journal refers to it.
+
+### 3. Set both config lines
+
+```yaml
+# ~/Developer/options-scanner/config.yaml
+broker:
+  account: "DU…NEW"        # the new one
+
+# ~/Developer/VolatilityTrader/config/config.yaml
+trading:
+  account: "DUR662028"     # the existing one
+```
+
+Neither bot will start with these blank once the login manages two accounts.
+That is deliberate: IBKR rejects every order in that state, so failing at
+connect beats failing on the first alert of the day.
+
+### 4. Verify before trading
+
+```bash
+cd ~/Developer/options-scanner
+./scripts/ops.sh doctor
+```
+
+The `Account isolation` section checks the two ids are set, differ, and are
+actually managed by the login.
+
+### 5. Restart both bots
+
+```bash
+./scripts/ops.sh restart warrior     # its supervisor brings it back in ~30s
+./scripts/ops.sh restart scanner
+```
+
+### 6. The test that proves it
+
+This is the one the single-account setup could never pass. Do it in market
+hours, with both accounts flat:
+
+1. Open a 1-contract paper option position in the **scanner's** account by hand,
+   and leave a working (unfilled) limit order in it — a buy well below the
+   market will sit there.
+2. Run warrior_bot's kill switch:
+   `cd ~/Developer/VolatilityTrader && .venv/bin/python scripts/kill_switch.py`
+3. Confirm **both** survive: the option position is untouched and the working
+   order is still working.
+
+Before the scoping work, step 2 would have cancelled that order via
+`reqGlobalCancel` and flattened the position. If either disappears, stop and
+re-check both `account` settings.
+
+### What is still shared
+
+One Gateway process, the market-data line pool, and API request pacing. A
+Gateway outage still stops both bots. Those follow from using one login and are
+accepted.
