@@ -192,6 +192,12 @@ cmd_doctor() {
   else
     ok "scanner=$sclient warrior=$wclient probe=$PROBE_CLIENT_ID (all distinct)"
   fi
+  # Client 0 is special at IBKR: it additionally receives orders placed by hand
+  # in TWS, which breaks the assumption that openTrades() only contains orders
+  # the bot itself placed -- the basis of warrior_bot's stop-coverage scan.
+  for pair in "scanner:$sclient" "warrior:$wclient"; do
+    [[ "${pair#*:}" == "0" ]] && bad "${pair%%:*} is on client id 0, which also receives manual TWS orders"
+  done
 
   head_ "Account isolation"
   local saccount waccount managed
