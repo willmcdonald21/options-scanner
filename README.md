@@ -1,9 +1,10 @@
 # options-scanner
 
 Copy-trades option alerts pasted into a Discord channel, then manages each
-position automatically: a trim ladder, a breakeven stop once the first trim
-fills, and a trailing stop from +75% onward. Every action is reported as an
-embed in a separate updates channel.
+position automatically on the advisor's published playstyle: sell half at +25%
+and another quarter at +50%, move the stop to break-even once trimmed, let the
+last quarter run, and trail 60% below the peak from +75% onward. Every action
+is reported as an embed in a separate updates channel.
 
 Real money is involved. The bot defaults to `dry_run`, and live trading needs
 two independent confirmations.
@@ -17,7 +18,8 @@ You paste an advisor alert into the **alerts channel**. The bot:
 1. reacts 👀 so you can see the paste was picked up
 2. parses the card and validates it (expiry cross-check, trim-target checksum)
 3. runs the risk gate (halted? market open? caps? duplicate?)
-4. sizes the position **from your config**, not the advisor's contract count
+4. sizes the position **from your own account** (a percent of equity, halved
+   for a lotto), not from the advisor's contract count
 5. buys with a **limit order**, walked up to a slippage cap — never a market order
 6. manages the position until it closes
 7. reacts ✅ (ordered), ❌ (rejected) or 🚫 (skipped) and posts the detail to the
@@ -29,17 +31,60 @@ Measured from your **actual fill price**, never the advisor's quoted entry.
 
 | Event | What happens |
 |---|---|
-| +25% reached | sell 25% of the position |
+| +25% reached | sell **half** the position |
 | +25% trim **fills** | stop moves to your entry fill — the trade can no longer lose |
-| +50% reached | sell 25% of what remains |
-| +75% reached | sell 25% of what remains, **and the trailing stop arms** |
-| +100% reached | nothing sold — the runner rides the trail from here |
-| trail, once armed | stop = `entry + 0.40 × (peak − entry)`, i.e. gives back 60% of the gain |
+| +50% reached | sell **a quarter** of the original — a quarter is left running |
+| +75% reached | nothing sold, **the trailing stop arms** |
+| +100 / 150 / 200 / 500 / 1000 / 2000% | nothing sold — each posts a card as the runner climbs |
+| trail, once armed | stop = `peak × 0.40`, i.e. 60% below the peak, floored at your entry |
+| above a +200% peak | the trail tightens to `peak × 0.55` |
+| above a +500% peak | it tightens again to `peak × 0.70` |
 | stop hit | bid at/below the stop on **2 consecutive quotes** → marketable limit sell |
+
+Both trim fractions are of the **original** position, so the outcome does not
+depend on whether the rungs were crossed in one quote or five.
 
 The stop only ever moves up. There is **no stop before the first trim fills** —
 that window is unprotected by design, and `!flatten` plus the daily loss limit
 are the only brakes on it.
+
+#### The trail is inert below +150%
+
+Worth understanding before trusting it: `peak × 0.40` sits **below** your entry
+until the peak reaches 2.5× entry. The effective stop is
+`max(break-even, trail)`, so on a $2.95 fill:
+
+| Peak | Trail says | Effective stop | What is protecting you |
+|---|---|---|---|
+| +25% (trim fills) | — | $2.95 | break-even |
+| +75% (trail arms) | $2.06 | $2.95 | still break-even |
+| +100% | $2.36 | $2.95 | still break-even |
+| +150% | $2.95 | $2.95 | the trail catches up |
+| +200% | $3.54 | $3.54 | the trail, +20% locked in |
+| +500% (0.55) | $9.74 | $9.74 | +230% locked in |
+
+Between +75% and +150% "trailing stop armed" means the trail is live, not that
+it is protecting anything beyond break-even. The TRAIL ARMED card says so.
+This is also why the multiplier tightens at the high levels.
+
+#### Sizing
+
+| | |
+|---|---|
+| One unit | `risk.unit_pct_of_account`% of live net liquidation (default 3%) |
+| Lotto | half a unit |
+| Super lotto | a quarter |
+| Ceiling | `risk.max_usd_per_trade`, applied **after** the percentage |
+
+The tier is read off the card — the advisor writes `Lotto Trade — RISKY` as a
+description line. **It is sometimes said only in chat** ("Super lotto size
+less", with no card), which the bot cannot see; that trade sizes as a full
+unit. Both tier-detection failures size *up*, so watch the channel on lotto
+days.
+
+If the equity read fails, the alert is **skipped** rather than sized off a
+guess. In `dry_run` there is no broker to ask, so `risk.fallback_equity` is
+used and the card says "assumed equity".
 
 Stops are **synthetic**: the bot watches quotes and sends a sell when the level
 breaks. No broker-side stop is ever placed, because a wide 0DTE spread triggers
@@ -98,7 +143,11 @@ The settings most worth reading before a first run:
 ```yaml
 mode: dry_run                     # dry_run | paper | live
 risk:
-  max_usd_per_trade: 1000         # your size, not the advisor's
+  unit_pct_of_account: 3.0        # one unit, as a percent of net liquidation
+  lotto_multiplier: 0.5           # "lotto = half"
+  super_lotto_multiplier: 0.25    # "super lotto = a quarter"
+  fallback_equity: 32000          # dry_run only; a live read failure skips
+  max_usd_per_trade: 1000         # absolute ceiling, applied after the percent
   max_contracts_per_trade: 50     # set to 1 for the first live sessions
   max_open_positions: 3
   max_daily_loss_usd: 1000        # auto-halts entries when breached
@@ -200,10 +249,19 @@ glance:
 
 ```
 TRIM +25% — SPX 7815P · 0DTE
-Sold 6 of 21 @ $0.62 · 15 still running.
-Stop moved to break-even at 0.48 — the remaining 15 can no longer lose money.
+Sold 11 of 21 @ $0.62 · 10 still running.
+Stop moved to break-even at 0.48 — the remaining 10 can no longer lose money.
 Entry        Exit         Locked In
-$0.48        $0.62        +$84.00
+$0.48        $0.62        +$154.00
+```
+
+and the runner's climb gets its own card at each level:
+
+```
+RUNNER +200% — SPX 7815P · 0DTE
+The runner reached +200%. Nothing sold — 4 still running.
+Peak         Stop
+$1.44        $0.79 (+64.6%)
 ```
 
 Two deliberate differences from the advisor's cards: the `Trim Targets` block on
@@ -247,9 +305,9 @@ Every notification carries a jump link back to the alert that caused it.
 The parser and the rules engine are pure and fully covered offline. The rules
 tests assert the exact trims and stops along each of six price paths (straight
 up, gap through several levels, spike and crash, never reaching +25%, reaching
-+25% then reversing, arming the trail then dropping), plus a fuzz over the two
-invariants that would cost real money: a stop that moves down, and selling more
-contracts than are held.
++25% then reversing, arming the trail then dropping), plus a fuzz over the three
+invariants that would cost real money: a stop that moves down, a stop set
+below the entry fill, and selling more contracts than are held.
 
 `test_position_manager.py` runs the same ladder through the real pipeline,
 rules engine and PaperBroker over a controllable price feed, including a
@@ -330,7 +388,7 @@ missing and raises a false alarm.
 | Client ID collision | IBKR refuses the second connection outright | warrior 11, scanner 12, its scripts 111/161, the probe 19. `doctor` compares them. |
 | `reqGlobalCancel()` | took no account argument, so it cancelled everything the login could see — including our working entry limits | **replaced** in warrior_bot with cancelling its own account's orders one at a time. `doctor` fails if the call ever comes back. |
 | Market-data lines | warrior self-caps at 90; IBKR's default is 100 | we add at most `max_open_positions`. `doctor` warns if the total would exceed 100. |
-| Buying power | shared | the scanner risks at most `max_open_positions × max_usd_per_trade` |
+| Buying power | shared | the scanner risks at most `max_open_positions × max_usd_per_trade`, since the ceiling binds whatever the percentage says |
 | Mac sleep | a sleeping Mac has no synthetic stop | `sudo pmset -c sleep 0 disksleep 0`. `doctor` fails if it is not 0. |
 | Gateway dropping | the stop silently stops working | enable **Auto restart** (not Auto logoff) in Configure → Settings → Lock and Exit. `doctor` reads Gateway's own log to tell you whether it is enabled. |
 
@@ -393,9 +451,11 @@ paper account still returns `Error 354`.
   stop. Disable sleep during market hours and run it under a supervisor.
 - **No stop until the first trim fills.** A position that never reaches +25% has
   no protection at all.
-- **A 1-contract position never gets a breakeven stop**, because it cannot trim
-  without breaking the runner. It is unprotected until the trail arms at +75%.
-  This matters most with `max_contracts_per_trade: 1`.
+- **A 1-contract position never trims**, because it cannot without breaking the
+  runner, so it never earns a breakeven stop the usual way. It gets one when
+  the trail arms at +75% (the trail's floor), which leaves it unprotected from
+  entry to +75%. This matters most with `max_contracts_per_trade: 1`, and at a
+  3% unit on a five-figure account most alerts size well above one contract.
 - **Forced end-of-day exit is off.** A 0DTE runner whose trail never trips
   expires worthless. The bot warns near the close; flip
   `market.force_exit_enabled` to change it.
