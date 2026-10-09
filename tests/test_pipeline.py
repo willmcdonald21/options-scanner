@@ -47,7 +47,8 @@ async def test_the_accepted_alert_is_sized_from_our_config_not_the_advisor(pipel
     note = find(result, "PARSED")
     values = {name: value for name, value, _ in note.fields}
     assert values["Advisor size"] == "25 contracts"
-    # $1000 cap / $47.50 per contract = 21, nothing to do with the advisor's 25.
+    # 3% of the fake broker's $100,000 is $3,000, capped by max_usd_per_trade
+    # at $1,000, which buys 21 at $47.50 -- nothing to do with the advisor's 25.
     assert values["Our size"].startswith("21 contracts")
 
 
@@ -67,10 +68,12 @@ async def test_the_reported_ladder_uses_our_rungs_not_the_cards(pipeline):
 
     note = find(result, "PARSED")
     ladder = {name: value for name, value, _ in note.fields}["Trim Targets"]
-    # Three selling rungs, in the advisor's own "25%   $0.594" shape.
-    # +100% is a no-trim rung and must not be listed.
-    assert ladder.count("\n") == 2
-    assert "25%" in ladder and "75%" in ladder
+    # Two selling rungs, in the advisor's own "25%   $0.594" shape. The levels
+    # above +50% sell nothing, so listing them here would advertise trims the
+    # bot will never place.
+    assert ladder.count("\n") == 1
+    assert "25%" in ladder and "50%" in ladder
+    assert "75%" not in ladder
     assert "100%" not in ladder
 
 
@@ -458,3 +461,127 @@ async def test_dry_run_embeds_are_labelled_as_such(pipeline):
     # to_embed needs discord installed; the label logic is what matters here.
     assert note.to_embed(dry_run=True).title.startswith("[DRY RUN]")
     assert not note.to_embed(dry_run=False).title.startswith("[DRY RUN]")
+
+
+# --- sizing off account equity -------------------------------------------
+
+
+async def test_the_unit_is_a_percent_of_live_equity(storage, risk):
+    """3% of $20,000 is $600, which buys 12 contracts at $47.50 -- well under
+    the $1,000 ceiling, so the percentage is what is doing the sizing."""
+    broker = FakeBroker()
+    broker.get_account = _equity(20_000.0)
+    settings = make_settings()
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline)
+
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert values["Our size"].startswith("12 contracts")
+
+
+async def test_the_ceiling_still_binds_on_a_large_account(storage):
+    broker = FakeBroker()
+    broker.get_account = _equity(5_000_000.0)
+    settings = make_settings()
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline)
+
+    # 3% of $5m is $150,000. The $1,000 ceiling is the only thing between that
+    # and a position nobody intended.
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert values["Our size"].startswith("21 contracts")
+
+
+async def test_a_lotto_is_sized_at_half_a_unit(storage):
+    broker = FakeBroker()
+    broker.get_account = _equity(20_000.0)
+    settings = make_settings()
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text=_tagged(SPEC_ALERT, " Lotto Trade — RISKY"))
+
+    # $600 halved is $300, which buys 6 at $47.50.
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert values["Our size"].startswith("6 contracts")
+
+
+async def test_a_super_lotto_is_sized_at_a_quarter_unit(storage):
+    broker = FakeBroker()
+    broker.get_account = _equity(20_000.0)
+    settings = make_settings()
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(
+        pipeline, text=_tagged(SPEC_ALERT, " Super Lotto Trade — Super RISKY")
+    )
+
+    # $600 quartered is $150, which buys 3 at $47.50.
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert values["Our size"].startswith("3 contracts")
+
+
+async def test_an_unreadable_equity_skips_the_alert_rather_than_guessing(storage):
+    """With the unit expressed as a percent of equity, a failed read has no
+    safe default: falling back to a number would size a live trade off a
+    stale guess."""
+    from options_scanner.broker.base import BrokerError
+
+    async def boom():
+        raise BrokerError("account summary never arrived")
+
+    broker = FakeBroker()
+    broker.get_account = boom
+    settings = make_settings()
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert result.accepted == []
+    assert broker.orders == []
+    assert "equity" in find(result, "skipped").description.lower()
+
+
+async def test_a_zero_equity_is_treated_as_a_failed_read_not_an_empty_account(storage):
+    """IBKR reports net liquidation as 0 before the account summary arrives.
+    Sized literally that is a zero budget; treated as a failure it is a skip."""
+    broker = FakeBroker()
+    broker.get_account = _equity(0.0)
+    settings = make_settings()
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+
+
+async def test_dry_run_sizes_off_the_fallback_equity_and_says_so(storage):
+    """No broker at all, so an assumed balance is the only option -- and the
+    card has to admit it."""
+    settings = make_settings(risk={"fallback_equity": 20_000.0})
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker=None)
+
+    result = await paste(pipeline)
+
+    assert result.final_reaction == REACTION_PLACED
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert values["Our size"].startswith("12 contracts")
+
+
+def _equity(net_liquidation: float):
+    from options_scanner.broker.base import AccountSnapshot
+
+    async def read():
+        return AccountSnapshot(net_liquidation=net_liquidation, buying_power=net_liquidation / 2)
+
+    return read
+
+
+def _tagged(alert: str, tag: str) -> str:
+    """Insert a tier tag as a description line, where the advisor puts it."""
+    lines = alert.split("\n")
+    lines.insert(2, tag)
+    return "\n".join(lines)

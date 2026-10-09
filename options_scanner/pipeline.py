@@ -54,7 +54,7 @@ from options_scanner.notifier import (
 from options_scanner.parser import parse_card
 from options_scanner.risk import RiskGate
 from options_scanner.rules import level_price
-from options_scanner.sizing import compute_contracts, position_cost
+from options_scanner.sizing import compute_contracts, position_cost, sizing_note, unit_cap
 from options_scanner.storage import (
     STATUS_ACCEPTED,
     STATUS_DUPLICATE,
@@ -351,14 +351,40 @@ class AlertPipeline:
                 )
                 return
 
-        # Our own size, from our own cap. The advisor's contract count reflects
-        # their account and is recorded for the audit trail only.
+        # Our own size, from our own account. The advisor's contract count
+        # reflects their account and is recorded for the audit trail only.
+        budget = await self._unit_cap(alert.tier)
+        if budget is None:
+            detail = (
+                "could not read account equity, and the unit is a percent of it. "
+                "Sizing off a guess is how one bad read becomes a position nobody "
+                "intended; nothing was ordered."
+            )
+            record(STATUS_SKIPPED, f"equity_unavailable: {detail}")
+            self.storage.bump_day(trading_day, alerts_skipped=1)
+            result.add(
+                REACTION_SKIPPED,
+                alert_skipped(
+                    reason="equity_unavailable", detail=detail, jump_url=jump_url,
+                    option=alert.option, today=trading_day,
+                ),
+            )
+            return
+        cap_usd, equity, equity_is_assumed = budget
+
         contracts = compute_contracts(
             reference_price,
-            settings.risk.max_usd_per_trade,
+            cap_usd,
             max_contracts=settings.risk.max_contracts_per_trade,
         )
         cost = position_cost(contracts, reference_price)
+        size_note = sizing_note(
+            equity=equity,
+            unit_pct=settings.risk.unit_pct_of_account,
+            tier=alert.tier,
+            cap_usd=cap_usd,
+            equity_is_assumed=equity_is_assumed,
+        )
 
         ladder = [
             (level, level_price(reference_price, level))
@@ -519,8 +545,65 @@ class AlertPipeline:
                     for level, pct in settings.trim.schedule
                     if pct > 0
                 ],
+                sizing_note=size_note,
                 today=trading_day,
             ),
+        )
+
+    async def _unit_cap(self, tier: str) -> tuple[float, float, bool] | None:
+        """The dollar budget for one trade: (cap, equity, equity_is_assumed).
+
+        None means the equity read failed and the caller must skip the alert.
+        That is the whole reason this returns a tuple rather than a float: with
+        the unit expressed as a percent of equity, a failed read has no safe
+        default. Falling back to a configured number would size a live trade
+        off a stale guess, and silently sizing to the ceiling would do the same
+        thing with extra steps.
+
+        dry_run is the one case where an assumed equity is correct -- it has no
+        broker at all -- and the flag it returns is what makes the entry card
+        say so.
+        """
+        risk = self.settings.risk
+
+        if self.broker is None:
+            return (
+                unit_cap(
+                    risk.fallback_equity,
+                    risk.unit_pct_of_account,
+                    tier,
+                    lotto_multiplier=risk.lotto_multiplier,
+                    super_lotto_multiplier=risk.super_lotto_multiplier,
+                    ceiling_usd=risk.max_usd_per_trade,
+                ),
+                risk.fallback_equity,
+                True,
+            )
+
+        try:
+            snapshot = await self.broker.get_account()
+        except BrokerError as exc:
+            logger.warning("account equity lookup failed: %s", exc)
+            return None
+
+        equity = getattr(snapshot, "net_liquidation", 0.0) or 0.0
+        if equity <= 0:
+            # A zero net liquidation is a failed read, not an empty account:
+            # IBKR reports it that way before the account summary arrives.
+            logger.warning("account equity read as %r; refusing to size off it", equity)
+            return None
+
+        return (
+            unit_cap(
+                equity,
+                risk.unit_pct_of_account,
+                tier,
+                lotto_multiplier=risk.lotto_multiplier,
+                super_lotto_multiplier=risk.super_lotto_multiplier,
+                ceiling_usd=risk.max_usd_per_trade,
+            ),
+            equity,
+            False,
         )
 
     async def _quote(self, spec) -> Quote | None:
