@@ -207,13 +207,22 @@ def alert_parsed(
     cost: float,
     jump_url: str | None,
     levels: list[tuple[int, float]],
+    sizing_note: str = "",
     today: date | None = None,
 ) -> Notification:
-    """What we read off the card, before anything is ordered."""
+    """What we read off the card, before anything is ordered.
+
+    Carries the same `sizing_note` as the entry card. This is the only card
+    dry run produces, so leaving it off here would mean the mode that exists
+    to show you the decision never showed you how the size was reached.
+    """
+    description = contract_sentence(option)
+    if sizing_note:
+        description += f"\n{sizing_note}"
     note = Notification(
         title=f"PARSED — {contract_label(option, today)}",
         level=Level.INFO,
-        description=contract_sentence(option),
+        description=description,
         jump_url=jump_url,
     )
     note.add("Advisor entry", price(entry_price))

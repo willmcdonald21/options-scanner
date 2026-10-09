@@ -401,6 +401,7 @@ class AlertPipeline:
             cost=cost,
             jump_url=jump_url,
             levels=ladder,
+            sizing_note=size_note,
             today=trading_day,
         )
 

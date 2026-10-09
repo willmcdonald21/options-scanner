@@ -585,3 +585,30 @@ def _tagged(alert: str, tag: str) -> str:
     lines = alert.split("\n")
     lines.insert(2, tag)
     return "\n".join(lines)
+
+
+async def test_dry_run_says_on_the_card_that_the_equity_was_assumed(storage):
+    """dry_run produces only the PARSED and WOULD BUY cards, so if the sizing
+    line is missing there, the mode that exists to show you the decision never
+    shows you how the size was reached."""
+    settings = make_settings(risk={"fallback_equity": 20_000.0})
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker=None)
+
+    result = await paste(pipeline)
+
+    description = find(result, "PARSED").description
+    assert "3% unit" in description
+    assert "assumed equity" in description
+
+
+async def test_a_live_sizing_line_does_not_claim_the_equity_was_assumed(storage):
+    broker = FakeBroker()
+    broker.get_account = _equity(20_000.0)
+    settings = make_settings()
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline)
+
+    description = find(result, "PARSED").description
+    assert "$20,000 equity" in description
+    assert "assumed" not in description
