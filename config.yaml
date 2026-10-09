@@ -18,18 +18,36 @@ entry:
   duplicate_window_seconds: 900  # same contract+entry inside this = a re-paste
 
 trim:
-  # [profit level %, percent of the REMAINING position to sell]
-  # +100% carries 0 on purpose: the runner rides the trail from there.
+  # The advisor's ladder: sell half at +25%, another quarter at +50%, leave a
+  # quarter running.
+  #
+  # [profit level %, percent of the ORIGINAL position to sell]. Of the
+  # original, not of the remainder -- a quarter of the remainder after
+  # selling half would leave three eighths running, not a quarter.
   schedule:
-    - [25, 25]
+    - [25, 50]
     - [50, 25]
-    - [75, 25]
-    - [100, 0]
+
+  # The runner's climb. Nothing is sold at these: each one is reported once
+  # when the peak crosses it, and the ones in trail.schedule below also
+  # tighten the stop.
+  runner_levels: [75, 100, 150, 200, 500, 1000, 2000]
+
   min_runner_contracts: 1
 
 trail:
   arm_at_pct: 75        # the trail starts working here
-  giveback_pct: 60      # stop = entry + 0.40 * (peak - entry)
+
+  # "Trails 60% below the peak": stop = peak * 0.40, tightening as the runner
+  # gets large. [peak gain % at or above which it applies, multiplier].
+  #
+  # Note what 0.40 implies: peak * 0.40 is BELOW entry until the peak reaches
+  # 2.5x entry (+150%), so the engine floors every trail stop at the entry
+  # fill. Between +75% and +150% breakeven is doing all the work.
+  schedule:
+    - [0, 0.40]         # 60% below the peak -- the guide's default
+    - [200, 0.55]       # 45% below, once up +200%
+    - [500, 0.70]       # 30% below, once up +500%
 
 stops:
   # Synthetic, bot-managed. Broker-side stops are not used: a wide 0DTE
@@ -42,7 +60,17 @@ stops:
   exit_retries: 3           # then escalate: an exit that won't fill must not stay quiet
 
 risk:
-  max_usd_per_trade: 1000
+  # "1 unit = 2-5% of your account; lotto = half; super lotto = a quarter."
+  # Read off live net liquidation at the moment the alert lands.
+  unit_pct_of_account: 3.0
+  lotto_multiplier: 0.5
+  super_lotto_multiplier: 0.25
+
+  # dry_run has no broker to ask for equity. A LIVE equity read that fails
+  # skips the alert instead of falling back to this.
+  fallback_equity: 32000
+
+  max_usd_per_trade: 1000       # absolute ceiling on top of the percentage
   max_contracts_per_trade: 50   # drop to 1 for the first live sessions
   max_open_positions: 3
   max_daily_loss_usd: 1000

@@ -93,19 +93,31 @@ class EntrySettings(BaseModel):
 
 
 class TrimSettings(BaseModel):
-    # (level percent, percent of the *remaining* position to sell).
-    # +100% carries 0 by design: the runner rides the trail from there.
+    # (level percent, percent of the ORIGINAL position to sell). The guide's
+    # ladder: half at +25%, another quarter at +50%, a quarter left running.
     schedule: list[tuple[int, float]] = Field(
-        default_factory=lambda: [(25, 25.0), (50, 25.0), (75, 25.0), (100, 0.0)]
+        default_factory=lambda: [(25, 50.0), (50, 25.0)]
+    )
+
+    # Levels the runner climbs through after the ladder. Nothing is sold at
+    # these; each one is reported once and can tighten the trail.
+    runner_levels: list[int] = Field(
+        default_factory=lambda: [75, 100, 150, 200, 500, 1000, 2000]
     )
     min_runner_contracts: int = Field(default=1, ge=0)
 
 
 class TrailSettings(BaseModel):
     arm_at_pct: int = Field(default=75, gt=0)
-    # Percent of the gain handed back from the peak. 60 keeps 40% of the best
-    # gain: stop = entry + 0.40 * (peak - entry).
-    giveback_pct: float = Field(default=60.0, ge=0, lt=100)
+
+    # (peak gain percent at or above which it applies, multiplier of the peak
+    # the stop sits at). 0.40 is the guide's rule -- trail 60% below the peak
+    # -- tightening as the runner gets large. The engine floors every one of
+    # these at the entry fill, so the effective stop is never a losing one;
+    # see options_scanner/rules.py.
+    schedule: list[tuple[int, float]] = Field(
+        default_factory=lambda: [(0, 0.40), (200, 0.55), (500, 0.70)]
+    )
 
 
 class StopSettings(BaseModel):
@@ -130,6 +142,19 @@ class StopSettings(BaseModel):
 
 
 class RiskSettings(BaseModel):
+    # One unit, as a percent of live account equity (net liquidation). The
+    # guide's "1 unit = 2-5% of your account"; the tier multipliers below are
+    # its "lotto = half, super lotto = a quarter".
+    unit_pct_of_account: float = Field(default=3.0, gt=0, le=100)
+    lotto_multiplier: float = Field(default=0.5, gt=0, le=1)
+    super_lotto_multiplier: float = Field(default=0.25, gt=0, le=1)
+
+    # Used only in dry_run, which has no broker to ask. A live equity read
+    # that fails skips the alert rather than sizing off this.
+    fallback_equity: float = Field(default=32000.0, gt=0)
+
+    # An absolute ceiling applied *after* the percentage, so a large account
+    # cannot quietly produce a huge position.
     max_usd_per_trade: float = Field(default=1000.0, gt=0)
     max_contracts_per_trade: int = Field(default=50, ge=1)
     max_open_positions: int = Field(default=3, ge=1)
@@ -254,13 +279,26 @@ class Settings(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _rules_are_buildable(self) -> "Settings":
+        """Build the rules config now, so a bad ladder or trail schedule fails
+        at load rather than on the first quote of the first position.
+
+        The real validation lives in RulesConfig -- it is the thing that has
+        to hold the invariants -- and this is what drags it forward to startup,
+        the same way MarketSettings forces its cutoff times to parse.
+        """
+        self.rules()
+        return self
+
     def rules(self) -> RulesConfig:
         """The config the rules engine actually runs on. Percentages are
         fractions in there and whole numbers here, converted in one place."""
         return RulesConfig(
             trim_schedule=tuple((level, pct / 100.0) for level, pct in self.trim.schedule),
+            runner_levels=tuple(self.trim.runner_levels),
             trail_arm_pct=self.trail.arm_at_pct,
-            trail_giveback=self.trail.giveback_pct / 100.0,
+            trail_schedule=tuple((threshold, mult) for threshold, mult in self.trail.schedule),
             breakeven_after_level_pct=min(level for level, _ in self.trim.schedule),
             confirm_breaches=self.stops.confirm_polls,
             min_runner_contracts=self.trim.min_runner_contracts,
@@ -283,11 +321,13 @@ class Settings(BaseModel):
         return data
 
     def summary_line(self) -> str:
-        levels = "/".join(f"+{level}%" for level, pct in self.trim.schedule if pct > 0)
+        trims = "/".join(f"+{level}%:{pct:.0f}%" for level, pct in self.trim.schedule if pct > 0)
+        trail_mult = self.trail.schedule[0][1] if self.trail.schedule else 0.0
         return (
-            f"mode={self.mode.value} broker={self.broker.kind.value} trims={levels} "
-            f"trail=arm@+{self.trail.arm_at_pct}%/giveback{self.trail.giveback_pct:.0f}% "
-            f"size=${self.risk.max_usd_per_trade:,.0f}/trade (max {self.risk.max_contracts_per_trade}) "
+            f"mode={self.mode.value} broker={self.broker.kind.value} trims={trims} of original "
+            f"trail=arm@+{self.trail.arm_at_pct}%/{(1 - trail_mult) * 100:.0f}% below peak "
+            f"size={self.risk.unit_pct_of_account:g}% of equity "
+            f"(cap ${self.risk.max_usd_per_trade:,.0f}, max {self.risk.max_contracts_per_trade}) "
             f"cutoff={self.market.entry_cutoff} ET"
         )
 

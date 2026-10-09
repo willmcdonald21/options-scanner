@@ -186,7 +186,15 @@ def test_a_bad_force_exit_time_also_fails_early():
         ("entry", {"max_slippage_pct": 0}),
         ("entry", {"fill_timeout_seconds": 0}),
         ("entry", {"duplicate_window_seconds": 0}),
-        ("trail", {"giveback_pct": 100}),
+        ("trail", {"arm_at_pct": 0}),
+        ("trail", {"schedule": [(0, 1.0)]}),
+        ("trail", {"schedule": [(200, 0.4)]}),  # must start at a 0% threshold
+        ("trail", {"schedule": [(0, 0.6), (200, 0.4)]}),  # must not loosen
+        ("trim", {"runner_levels": [25, 300]}),  # 25 is already a trim rung
+        ("risk", {"unit_pct_of_account": 0}),
+        ("risk", {"lotto_multiplier": 0}),
+        ("risk", {"super_lotto_multiplier": 1.5}),
+        ("risk", {"fallback_equity": 0}),
         ("stops", {"confirm_polls": 0}),
         ("stops", {"source_blend": 1.5}),
         ("risk", {"max_usd_per_trade": 0}),
@@ -205,19 +213,30 @@ def test_nonsensical_tunables_are_rejected(block, payload):
 def test_whole_percent_config_becomes_fractions_for_the_rules_engine():
     rules = make_settings().rules()
 
-    assert rules.trim_schedule == ((25, 0.25), (50, 0.25), (75, 0.25), (100, 0.0))
-    assert rules.trail_giveback == pytest.approx(0.60)
+    assert rules.trim_schedule == ((25, 0.50), (50, 0.25))
+    assert rules.runner_levels == (75, 100, 150, 200, 500, 1000, 2000)
+    assert rules.trail_schedule == ((0, 0.40), (200, 0.55), (500, 0.70))
     assert rules.trail_arm_pct == 75
     assert rules.breakeven_after_level_pct == 25
 
 
 def test_a_custom_schedule_carries_through_to_the_rules_engine():
-    settings = make_settings(trim={"schedule": [(50, 50.0), (200, 0.0)]}, trail={"arm_at_pct": 200})
+    settings = make_settings(
+        trim={"schedule": [(50, 50.0)], "runner_levels": [200]},
+        trail={"arm_at_pct": 200},
+    )
     rules = settings.rules()
 
-    assert rules.trim_schedule == ((50, 0.5), (200, 0.0))
+    assert rules.trim_schedule == ((50, 0.5),)
+    assert rules.runner_levels == (200,)
     assert rules.breakeven_after_level_pct == 50  # the lowest rung, not a hardcoded 25
     assert rules.trail_arm_pct == 200
+
+
+def test_a_custom_trail_schedule_carries_through_to_the_rules_engine():
+    rules = make_settings(trail={"schedule": [(0, 0.5), (1000, 0.8)]}).rules()
+
+    assert rules.trail_schedule == ((0, 0.5), (1000, 0.8))
 
 
 def test_the_confirmation_window_is_shared_with_the_rules_engine():
