@@ -8,8 +8,8 @@ what makes the six price paths in the spec testable as plain data.
 Two entry points, because the spec distinguishes a price event from a fill
 event:
 
-* `evaluate(state, bid, config)` -- quote-driven. Peak, trims, trail arming,
-  trail ratchet, stop breach.
+* `evaluate(state, bid, config)` -- quote-driven. Peak, trims, runner
+  milestones, trail arming, trail ratchet, stop breach.
 * `on_trim_fill(state, level_pct, config)` -- fill-driven. The breakeven stop
   is set when the first trim *fills*, not when it is signalled, because until
   it fills the contracts are still held.
@@ -18,19 +18,34 @@ event:
 so a test can advance a position without the position manager, the broker or
 any I/O.
 
-The rules, in evaluation order:
+The rules mirror the advisor's published playstyle: sell half at +25%, another
+quarter at +50%, move the stop to breakeven once trimmed, let the runner climb
+75 -> 100 -> 150 -> 200 -> 500 -> 1000 -> 2000, and trail 60% below the peak
+from +75% on.
+
+In evaluation order:
 
 1. **Peak** tracks the highest bid seen since entry.
-2. **Trims** fire for every unfired level whose price the bid has reached,
-   selling a fraction of what *remains* at that moment. A gap through several
-   levels fires each one in order, compounding on the reduced quantity.
-3. **Breakeven** (on the first trim's fill) sets the stop to the actual entry
+2. **Trims** fire for every unfired rung the bid has reached, selling a
+   fraction of the **original** position: 50% at +25%, 25% at +50%. A gap
+   through both rungs fires each in order and still leaves the 25% runner.
+3. **Runner levels** above the ladder sell nothing. They fire once each, so
+   crossing one is a reportable milestone rather than a silent no-op.
+4. **Breakeven** (on the first trim's fill) sets the stop to the actual entry
    fill. Before that the position has no stop at all.
-4. **Trail arms** when the bid reaches the arming level.
-5. **Trail** sets the stop to `entry + (1 - giveback) * (peak - entry)`.
-6. **Stop breach** requires the bid to sit at or below the stop for two
+5. **Trail arms** when the bid reaches the arming level.
+6. **Trail** sets the stop to `peak * multiplier` -- 0.40 by default, i.e.
+   60% below the peak, tightening to 0.55 above +200% and 0.70 above +500%.
+   It is floored at the entry fill, so arming the trail can never install a
+   stop that would book a loss.
+7. **Stop breach** requires the bid to sit at or below the stop for two
    consecutive quotes before exiting, so one bad tick on a wide 0DTE spread
    cannot flatten the position.
+
+Worth knowing about rule 6: `peak * 0.40` sits *below* breakeven until the
+peak reaches 2.5x entry (+150%). Between +75% and +150% the floor is doing all
+the work and the trail is inert. That is what the guide describes, and it is
+why the multiplier tightens at the high levels.
 
 The stop only ever moves up. `apply_action` asserts it, so a rules bug that
 tried to lower a stop would fail loudly rather than quietly give back profit.
@@ -46,20 +61,33 @@ from options_scanner.models import PositionState
 
 # --- configuration ---------------------------------------------------------
 
-# (level as whole percent, fraction of the *remaining* position to sell).
+# (level as whole percent, fraction of the *original* position to sell).
 #
-# A fraction of the remainder rather than of the original size is what lets
-# one rule cover both a 21-contract position and a 2-contract one: it can
-# never over-sell and it always leaves a runner.
+# The fractions are of the original size, not of the remainder, because that
+# is what "sell half at +25%, another quarter at +50%" means: half, then a
+# quarter, leaving a quarter to run. Measuring off the remainder would sell
+# half then an eighth and leave three eighths.
 #
-# +100% is listed with a zero fraction on purpose. It is not a trim -- the
-# runner is left to ride the trail from there -- but keeping the rung in the
-# schedule documents that the decision was made rather than overlooked.
+# `trim_qty` still clamps every rung so the runner survives, which is what
+# keeps the rule safe on a 2- or 3-contract position.
 DEFAULT_TRIM_SCHEDULE: tuple[tuple[int, float], ...] = (
-    (25, 0.25),
+    (25, 0.50),
     (50, 0.25),
-    (75, 0.25),
-    (100, 0.0),
+)
+
+# Levels the runner climbs through after the ladder is done. Nothing is sold
+# here -- each one is a milestone worth reporting, and crossing one can
+# tighten the trail via DEFAULT_TRAIL_SCHEDULE.
+DEFAULT_RUNNER_LEVELS: tuple[int, ...] = (75, 100, 150, 200, 500, 1000, 2000)
+
+# (peak gain in whole percent at or above which it applies, multiplier of the
+# peak). 0.40 is the guide's default: trail 60% below the peak. It tightens as
+# the gain gets large, because handing back 60% of a +500% runner is a lot of
+# money to give to noise.
+DEFAULT_TRAIL_SCHEDULE: tuple[tuple[int, float], ...] = (
+    (0, 0.40),
+    (200, 0.55),
+    (500, 0.70),
 )
 
 
@@ -67,13 +95,15 @@ DEFAULT_TRIM_SCHEDULE: tuple[tuple[int, float], ...] = (
 class RulesConfig:
     trim_schedule: tuple[tuple[int, float], ...] = DEFAULT_TRIM_SCHEDULE
 
+    # Levels above the ladder that sell nothing but are still reported once.
+    runner_levels: tuple[int, ...] = DEFAULT_RUNNER_LEVELS
+
     # The level at which the trailing stop starts working.
     trail_arm_pct: int = 75
 
-    # Fraction of the gain the trail is willing to hand back from the peak,
-    # so the stop sits at entry + (1 - giveback) * (peak - entry). At 0.60
-    # that locks in 40% of the best gain achieved.
-    trail_giveback: float = 0.60
+    # How far below the peak the trail sits, as a multiplier of the peak,
+    # banded by how far the position has run. See DEFAULT_TRAIL_SCHEDULE.
+    trail_schedule: tuple[tuple[int, float], ...] = DEFAULT_TRAIL_SCHEDULE
 
     # The trim whose fill promotes the stop to breakeven.
     breakeven_after_level_pct: int = 25
@@ -99,12 +129,66 @@ class RulesConfig:
                 raise ValueError(f"trim level must be a positive percent, got {level}")
             if not 0.0 <= fraction <= 1.0:
                 raise ValueError(f"trim fraction for +{level}% must be in [0, 1], got {fraction}")
-        if not 0.0 <= self.trail_giveback < 1.0:
-            raise ValueError(f"trail_giveback must be in [0, 1), got {self.trail_giveback}")
+
+        runners = list(self.runner_levels)
+        if runners != sorted(runners):
+            raise ValueError(f"runner_levels must be in ascending order, got {runners}")
+        if len(set(runners)) != len(runners):
+            raise ValueError(f"runner_levels has duplicates: {runners}")
+        # A level that is both a trim rung and a runner level would fire twice
+        # in one ladder and the second one would find it already consumed.
+        clash = sorted(set(runners) & set(levels))
+        if clash:
+            raise ValueError(f"levels appear in both trim_schedule and runner_levels: {clash}")
+        for level in runners:
+            if level <= 0:
+                raise ValueError(f"runner level must be a positive percent, got {level}")
+
+        if not self.trail_schedule:
+            raise ValueError("trail_schedule must not be empty")
+        thresholds = [t for t, _ in self.trail_schedule]
+        if thresholds[0] != 0:
+            raise ValueError(
+                f"trail_schedule must start at a 0% threshold so every peak is covered, "
+                f"got {thresholds[0]}"
+            )
+        if thresholds != sorted(thresholds):
+            raise ValueError(f"trail_schedule must be in ascending threshold order, got {thresholds}")
+        if len(set(thresholds)) != len(thresholds):
+            raise ValueError(f"trail_schedule has duplicate thresholds: {thresholds}")
+        multipliers = [m for _, m in self.trail_schedule]
+        for threshold, multiplier in self.trail_schedule:
+            if not 0.0 < multiplier < 1.0:
+                # 1.0 would park the stop on the peak and exit on the first
+                # tick down; 0.0 or less is not a stop at all.
+                raise ValueError(
+                    f"trail multiplier at +{threshold}% must be in (0, 1), got {multiplier}"
+                )
+        if multipliers != sorted(multipliers):
+            raise ValueError(
+                f"trail_schedule multipliers must not loosen as the gain grows, got {multipliers}"
+            )
+
         if self.confirm_breaches < 1:
             raise ValueError(f"confirm_breaches must be at least 1, got {self.confirm_breaches}")
         if self.min_runner_contracts < 0:
             raise ValueError(f"min_runner_contracts cannot be negative, got {self.min_runner_contracts}")
+
+    @property
+    def ladder(self) -> tuple[tuple[int, float | None], ...]:
+        """Every level the bid can cross, in ascending order.
+
+        A trim rung carries its fraction; a runner level carries None, which
+        is how `evaluate` tells "sell this fraction" from "report this and
+        sell nothing".
+        """
+        rungs: list[tuple[int, float | None]] = [(level, fraction) for level, fraction in self.trim_schedule]
+        rungs.extend((level, None) for level in self.runner_levels)
+        return tuple(sorted(rungs, key=lambda rung: rung[0]))
+
+    @property
+    def all_levels(self) -> tuple[int, ...]:
+        return tuple(level for level, _ in self.ladder)
 
 
 # --- actions ---------------------------------------------------------------
@@ -124,6 +208,19 @@ class Trim:
 
     level_pct: int
     qty: int
+    trigger_price: float
+
+
+@dataclass(frozen=True)
+class RunnerLevel:
+    """The runner crossed +`level_pct`%. Nothing is sold.
+
+    Distinct from `Trim(qty=0)` so it can be reported: these are the levels
+    the guide has the runner climbing through, and a milestone nobody can see
+    is indistinguishable from the bot having stalled.
+    """
+
+    level_pct: int
     trigger_price: float
 
 
@@ -164,7 +261,7 @@ class StopOut:
     bid: float
 
 
-Action = UpdatePeak | Trim | SetStop | ArmTrail | Breach | ClearBreach | StopOut
+Action = UpdatePeak | Trim | RunnerLevel | SetStop | ArmTrail | Breach | ClearBreach | StopOut
 
 
 # --- price helpers ---------------------------------------------------------
@@ -190,23 +287,56 @@ def level_price(entry_fill: float, level_pct: int) -> float:
     return entry_fill * (1.0 + level_pct / 100.0)
 
 
-def trail_stop_price(entry_fill: float, peak_bid: float, giveback: float) -> float:
-    """Hand back `giveback` of the gain from the peak, keep the rest."""
-    return round_price(entry_fill + (1.0 - giveback) * (peak_bid - entry_fill))
+def trail_multiplier(
+    entry_fill: float,
+    peak_bid: float,
+    schedule: tuple[tuple[int, float], ...] = DEFAULT_TRAIL_SCHEDULE,
+) -> float:
+    """The fraction of the peak the stop sits at, for the band the peak gain
+    falls in. The highest threshold at or below the gain wins."""
+    gain_pct = (peak_bid / entry_fill - 1.0) * 100.0
+    multiplier = schedule[0][1]
+    for threshold, candidate in schedule:
+        if gain_pct >= threshold:
+            multiplier = candidate
+        else:
+            break
+    return multiplier
 
 
-def trim_qty(remaining: int, fraction: float, min_runner: int) -> int:
+def trail_stop_price(
+    entry_fill: float,
+    peak_bid: float,
+    schedule: tuple[tuple[int, float], ...] = DEFAULT_TRAIL_SCHEDULE,
+) -> float:
+    """Trail below the peak: `peak * multiplier`, floored at the entry fill.
+
+    The floor matters. At the default 0.40 the raw trail sits below entry
+    until the peak reaches 2.5x entry, so without it, arming the trail at
+    +75% would install a stop that books a loss on a position that is up 75%.
+    Flooring it means the stop is `max(breakeven, 60% below the peak)` -- the
+    trail takes over only once it is genuinely worth more than breakeven.
+    """
+    multiplier = trail_multiplier(entry_fill, peak_bid, schedule)
+    return round_price(max(peak_bid * multiplier, entry_fill))
+
+
+def trim_qty(original_qty: int, remaining: int, fraction: float, min_runner: int) -> int:
     """How many contracts one trim sells.
+
+    The fraction is of `original_qty` -- the size that actually filled -- so
+    the two rungs sell half and a quarter of the position and leave a quarter
+    running, rather than compounding down the remainder.
 
     Rounded **up**, so a small position still de-risks: at 2 contracts a
     quarter is 0.5, and rounding down would mean a position that never trims
-    and therefore never earns its breakeven stop. Clamped so at least
-    `min_runner` contracts always survive -- that clamp, not the rounding, is
-    what stops the ladder from closing the position.
+    and therefore never earns its breakeven stop. Clamped against `remaining`
+    so at least `min_runner` contracts always survive -- that clamp, not the
+    rounding, is what stops the ladder from closing the position.
     """
     if fraction <= 0.0 or remaining <= min_runner:
         return 0
-    wanted = math.ceil(remaining * fraction)
+    wanted = math.ceil(original_qty * fraction)
     return max(0, min(wanted, remaining - min_runner))
 
 
@@ -235,46 +365,50 @@ def evaluate(state: PositionState, bid: float, config: RulesConfig | None = None
         peak = bid
         actions.append(UpdatePeak(price=bid))
 
-    # 2. Trims. Each crossed level sells a fraction of what remains *after*
-    #    the earlier levels in this same gap, so three levels crossing at
-    #    once compounds rather than selling 25% of the original three times.
+    # 2/3. The ladder. Trim rungs sell a fraction of the original size;
+    #      runner levels above them sell nothing and are reported instead.
+    #      A gap through several levels fires each one in ascending order.
     remaining = state.remaining_qty
-    for level_pct, fraction in config.trim_schedule:
+    for level_pct, fraction in config.ladder:
         if level_pct in state.fired_levels:
             continue
         if bid < level_price(state.entry_fill, level_pct):
             continue
-        qty = trim_qty(remaining, fraction, config.min_runner_contracts)
+        if fraction is None:
+            actions.append(RunnerLevel(level_pct=level_pct, trigger_price=bid))
+            continue
+        qty = trim_qty(state.original_qty, remaining, fraction, config.min_runner_contracts)
         if qty > 0:
             actions.append(Trim(level_pct=level_pct, qty=qty, trigger_price=bid))
             remaining -= qty
         else:
-            # The level is still consumed. A zero-fraction rung (+100%) and a
-            # position already down to its runner both mean "nothing to sell
-            # here", not "try again on the next tick".
+            # The level is still consumed. A position already down to its
+            # runner means "nothing to sell here", not "try again on the
+            # next tick".
             actions.append(Trim(level_pct=level_pct, qty=0, trigger_price=bid))
 
-    # 3. Breakeven is not here -- it is driven by the trim's fill, in
+    # 4. Breakeven is not here -- it is driven by the trim's fill, in
     #    on_trim_fill(). Until those contracts actually sell, we still hold
     #    them, and a stop premised on a fill that never happened would be a
     #    lie about how protected the position is.
 
-    # 4. Arm the trail.
+    # 5. Arm the trail.
     armed = state.trail_armed
     if not armed and bid >= level_price(state.entry_fill, config.trail_arm_pct):
         armed = True
         actions.append(ArmTrail(at_price=bid))
 
-    # 5. Ratchet the trail. Only ever upward, and only above whatever the
-    #    breakeven stop already guarantees.
+    # 6. Ratchet the trail. Only ever upward. The candidate is floored at the
+    #    entry fill inside trail_stop_price, so this cannot install a losing
+    #    stop on a winning position.
     stop = state.stop_price
     if armed:
-        candidate = trail_stop_price(state.entry_fill, peak, config.trail_giveback)
+        candidate = trail_stop_price(state.entry_fill, peak, config.trail_schedule)
         if stop is None or candidate > stop:
             stop = candidate
             actions.append(SetStop(price=candidate, reason="trail"))
 
-    # 6. Stop breach, with confirmation. Checked last: a bid cannot be both
+    # 7. Stop breach, with confirmation. Checked last: a bid cannot be both
     #    at a trim level and under the stop, because the stop never exceeds
     #    breakeven until the trail arms, and the trail only arms once every
     #    lower level has already fired.
@@ -337,6 +471,11 @@ def apply_action(state: PositionState, action: Action) -> None:
                 )
             state.remaining_qty -= action.qty
 
+    elif isinstance(action, RunnerLevel):
+        # Consumed exactly like a trim rung, so the milestone is reported once
+        # rather than on every quote above it.
+        state.fired_levels = state.fired_levels | {action.level_pct}
+
     elif isinstance(action, SetStop):
         if state.stop_price is not None and action.price < state.stop_price:
             raise ValueError(
@@ -370,22 +509,25 @@ def apply_action(state: PositionState, action: Action) -> None:
 
 
 def next_level(state: PositionState, config: RulesConfig | None = None) -> tuple[int, float] | None:
-    """The next unfired rung and its price, for `!status`. None once the
-    ladder is exhausted."""
+    """The next unfired level and its price, for `!status`. None once the
+    whole ladder -- trims and runner levels alike -- is exhausted."""
     config = config or RulesConfig()
-    for level_pct, _ in config.trim_schedule:
+    for level_pct in config.all_levels:
         if level_pct not in state.fired_levels:
             return level_pct, level_price(state.entry_fill, level_pct)
     return None
 
 
 __all__ = [
+    "DEFAULT_RUNNER_LEVELS",
+    "DEFAULT_TRAIL_SCHEDULE",
     "DEFAULT_TRIM_SCHEDULE",
     "Action",
     "ArmTrail",
     "Breach",
     "ClearBreach",
     "RulesConfig",
+    "RunnerLevel",
     "SetStop",
     "StopOut",
     "Trim",
@@ -396,6 +538,7 @@ __all__ = [
     "next_level",
     "on_trim_fill",
     "round_price",
+    "trail_multiplier",
     "trail_stop_price",
     "trim_qty",
 ]
