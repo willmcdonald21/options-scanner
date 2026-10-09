@@ -293,11 +293,18 @@ def trail_multiplier(
     schedule: tuple[tuple[int, float], ...] = DEFAULT_TRAIL_SCHEDULE,
 ) -> float:
     """The fraction of the peak the stop sits at, for the band the peak gain
-    falls in. The highest threshold at or below the gain wins."""
-    gain_pct = (peak_bid / entry_fill - 1.0) * 100.0
+    falls in. The highest threshold at or below the gain wins.
+
+    The band boundary is tested with `level_price`, exactly as the ladder
+    tests its rungs, so "the peak has reached +200%" means one thing in this
+    module rather than two. Comparing a divided-out gain percent against the
+    threshold instead would disagree with the ladder by a tick at the
+    boundary -- enough for the stop to tighten before the card that explains
+    why it tightened.
+    """
     multiplier = schedule[0][1]
     for threshold, candidate in schedule:
-        if gain_pct >= threshold:
+        if peak_bid >= level_price(entry_fill, threshold):
             multiplier = candidate
         else:
             break

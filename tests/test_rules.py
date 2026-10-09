@@ -707,3 +707,19 @@ def test_on_trim_fill_ignores_levels_below_the_breakeven_trigger():
 
     assert on_trim_fill(state, 25, config) == []
     assert on_trim_fill(state, 50, config) == [SetStop(price=BREAKEVEN, reason="breakeven")]
+
+
+def test_the_trail_band_and_the_ladder_agree_on_reaching_a_level():
+    """Both answer "has the peak reached +200%?", and they must answer it the
+    same way. 2.95 * 3.0 is 8.850000000000001 in binary float, so a bid of
+    exactly 8.85 has not reached +200% -- for the ladder or for the trail."""
+    entry = 2.95
+
+    assert trail_multiplier(entry, 8.85) == 0.40    # not yet in the 0.55 band
+    assert trail_multiplier(entry, 8.86) == 0.55
+
+    state = PositionState(
+        option=_option(), entry_fill=entry, original_qty=4, remaining_qty=4, peak_bid=entry
+    )
+    assert 200 not in {a.level_pct for a in walk([8.85], state=state).actions
+                       if isinstance(a, RunnerLevel)}
