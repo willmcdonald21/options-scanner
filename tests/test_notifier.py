@@ -24,14 +24,17 @@ from options_scanner.notifier import (
     broker_disconnected,
     daily_loss_limit,
     end_of_day,
+    entry_filled,
     money,
     near_close_warning,
     phantom_exit,
     price,
+    runner_level,
     signed_pct,
     stale_quotes,
     stop_moved,
     stopped_out,
+    trail_armed,
     trim_executed,
 )
 
@@ -237,3 +240,83 @@ def test_money_and_percent_formatting():
 def test_the_four_reactions_are_distinct():
     reactions = {REACTION_RECEIVED, REACTION_PLACED, REACTION_REJECTED, REACTION_SKIPPED}
     assert len(reactions) == 4
+
+
+# --- the runner's climb and the trail -------------------------------------
+
+
+def test_the_runner_level_card_names_the_level_and_sells_nothing():
+    note = runner_level(
+        option=OPT, level_pct=200, trigger_price=1.43, entry_price=0.475,
+        remaining=4, stop_price=0.79, jump_url=JUMP, today=TODAY,
+    )
+
+    assert note.title == "RUNNER +200% — SPX 7815P · 0DTE"
+    assert "Nothing sold" in note.description
+    assert "4 still running" in note.description
+    assert note.level is Level.SUCCESS
+    assert not note.mentions_owner  # routine good news; a ping here trains the ping away
+
+
+def test_the_runner_level_card_reports_what_the_stop_locks_in():
+    note = runner_level(
+        option=OPT, level_pct=500, trigger_price=2.85, entry_price=0.475,
+        remaining=4, stop_price=2.00, today=TODAY,
+    )
+
+    stop_field = dict((name, value) for name, value, _ in note.fields)["Stop"]
+    assert "$2.00" in stop_field
+    assert "+321.1%" in stop_field  # 2.00 / 0.475 - 1
+
+
+def test_the_runner_level_card_says_so_when_there_is_no_stop_yet():
+    """Reachable for a 1-contract position below the arming level: it cannot
+    trim, so it has earned no stop. A blank field would read as a bug."""
+    note = runner_level(
+        option=OPT, level_pct=75, trigger_price=0.84, entry_price=0.475,
+        remaining=1, stop_price=None, today=TODAY,
+    )
+
+    assert dict((name, value) for name, value, _ in note.fields)["Stop"] == "none yet"
+
+
+def test_the_trail_card_describes_the_distance_below_the_peak():
+    note = trail_armed(option=OPT, at_price=0.84, multiplier=0.40, today=TODAY)
+
+    assert "60% below the peak" in note.description
+    assert dict((name, value) for name, value, _ in note.fields)["Trails at"] == "40% of peak"
+
+
+def test_the_trail_card_admits_when_the_trail_is_not_yet_protecting_anything():
+    """peak * 0.40 is under the entry fill until the peak reaches +150%.
+    Announcing a trailing stop without saying that would overstate the
+    protection."""
+    note = trail_armed(option=OPT, at_price=0.84, multiplier=0.40, today=TODAY)
+
+    assert "+150%" in note.description
+    assert "break-even" in note.description
+
+
+def test_a_tighter_trail_reports_a_shorter_inert_window():
+    note = trail_armed(option=OPT, at_price=0.84, multiplier=0.80, today=TODAY)
+
+    assert "20% below the peak" in note.description
+    assert "+25%" in note.description  # 1/0.80 - 1
+
+
+def test_the_entry_card_reports_where_the_size_came_from():
+    note = entry_filled(
+        option=OPT, qty=6, fill_price=0.475, cost=285.0, jump_url=JUMP,
+        sizing_note="Our size: 3% unit · lotto x0.5 · $485 of $32,310 equity",
+        today=TODAY,
+    )
+
+    assert "3% unit" in note.description
+    assert "lotto" in note.description
+    assert "Entered SPX" in note.description  # the advisor's line is still there
+
+
+def test_the_entry_card_is_unchanged_without_a_sizing_note():
+    note = entry_filled(option=OPT, qty=6, fill_price=0.475, cost=285.0, jump_url=JUMP, today=TODAY)
+
+    assert note.description == "Entered SPX Oct06 '26 7815 Put"

@@ -337,14 +337,23 @@ def entry_filled(
     cost: float,
     jump_url: str | None,
     levels: list[tuple[int, float]] | None = None,
+    sizing_note: str = "",
     today: date | None = None,
 ) -> Notification:
     """The entry card, in the advisor's own shape -- except the ladder here is
-    ours, recomputed off the fill we actually got."""
+    ours, recomputed off the fill we actually got.
+
+    `sizing_note` says where the size came from (the unit percent, the tier,
+    and whether the equity behind it was real or a dry-run assumption). A size
+    reported without that is unauditable after the fact.
+    """
+    description = contract_sentence(option)
+    if sizing_note:
+        description += f"\n{sizing_note}"
     note = Notification(
         title=f"BUY — {contract_label(option, today)}",
         level=Level.SUCCESS,
-        description=contract_sentence(option),
+        description=description,
         jump_url=jump_url,
     )
     note.add("Entry", price(fill_price))
@@ -438,18 +447,70 @@ def stop_moved(
 
 
 def trail_armed(
-    *, option: OptionKey, at_price: float, giveback_pct: float, jump_url: str | None = None,
+    *, option: OptionKey, at_price: float, multiplier: float, jump_url: str | None = None,
     today: date | None = None,
 ) -> Notification:
+    """The trail is live. `multiplier` is the fraction of the peak the stop
+    sits at, so 0.40 reads as "60% below the peak".
+
+    The card says plainly when the trail is not yet worth anything. At 0.40 the
+    raw trail is under the entry fill until the peak reaches 1/0.40 = 2.5x
+    entry, so for most of the early climb breakeven is the real stop. Saying
+    "trailing stop armed" and leaving that out would overstate how protected
+    the position is.
+    """
+    below_pct = (1.0 - multiplier) * 100.0
+    description = f"From here the stop trails {below_pct:.0f}% below the peak."
+    inert_until = (1.0 / multiplier - 1.0) * 100.0
+    description += (
+        f"\nBelow a +{inert_until:.0f}% peak that sits under the entry fill, so break-even "
+        "is what is actually protecting the position until then."
+    )
     note = Notification(
         title=f"TRAIL ARMED — {contract_label(option, today)}",
         level=Level.SUCCESS,
-        description=(
-            f"From here the stop gives back at most {giveback_pct:.0f}% of the gain from the peak."
-        ),
+        description=description,
         jump_url=jump_url,
     )
     note.add("Armed at", price(at_price))
+    note.add("Trails at", f"{multiplier:.0%} of peak")
+    return note
+
+
+def runner_level(
+    *,
+    option: OptionKey,
+    level_pct: int,
+    trigger_price: float,
+    entry_price: float,
+    remaining: int,
+    stop_price: float | None = None,
+    jump_url: str | None = None,
+    today: date | None = None,
+) -> Notification:
+    """A milestone on the runner's climb: 75 -> 100 -> 150 -> 200 -> 500 ->
+    1000 -> 2000. Nothing is sold.
+
+    These exist so the climb is visible. The alternative -- consuming the level
+    silently -- makes a runner that is up +500% look exactly like a bot that
+    has stopped reading quotes.
+    """
+    note = Notification(
+        title=f"RUNNER +{level_pct}% — {contract_label(option, today)}",
+        level=Level.SUCCESS,
+        description=(
+            f"The runner reached +{level_pct}%. Nothing sold — {remaining} still running."
+        ),
+        jump_url=jump_url,
+    )
+    note.add("Peak", price(trigger_price))
+    if stop_price is not None:
+        locked = (stop_price / entry_price - 1.0) * 100.0
+        note.add("Stop", f"{price(stop_price)} ({signed_pct(locked)})")
+    else:
+        # Only reachable below the arming level, and only for a position that
+        # could not trim. Worth saying rather than printing a blank field.
+        note.add("Stop", "none yet")
     return note
 
 
