@@ -38,6 +38,7 @@ from options_scanner.notifier import (
     error as error_note,
     near_close_warning,
     phantom_exit,
+    runner_level as runner_level_note,
     stale_quotes,
     stop_moved,
     stopped_out,
@@ -50,6 +51,7 @@ from options_scanner.rules import (
     Breach,
     ClearBreach,
     RulesConfig,
+    RunnerLevel,
     SetStop,
     StopOut,
     Trim,
@@ -283,7 +285,22 @@ class PositionManager:
                 trail_armed(
                     option=state.option,
                     at_price=action.at_price,
-                    giveback_pct=self.settings.trail.giveback_pct,
+                    multiplier=self.rules.trail_schedule[0][1],
+                    jump_url=managed.jump_url,
+                )
+            )
+            return
+
+        if isinstance(action, RunnerLevel):
+            apply_action(state, action)
+            tick.add(
+                runner_level_note(
+                    option=state.option,
+                    level_pct=action.level_pct,
+                    trigger_price=action.trigger_price,
+                    entry_price=state.entry_fill,
+                    remaining=state.remaining_qty,
+                    stop_price=state.stop_price,
                     jump_url=managed.jump_url,
                 )
             )
@@ -318,9 +335,10 @@ class PositionManager:
         state = managed.state
 
         if action.qty == 0:
-            # A rung with nothing to sell: the +100% level, or a position
-            # already down to its runner. Consume it so it is not retried on
-            # every quote, but place nothing.
+            # A rung with nothing to sell: a position already down to its
+            # runner. Consume it so it is not retried on every quote, but
+            # place nothing. (The levels above the ladder are RunnerLevel
+            # actions, not zero-quantity trims.)
             apply_action(state, action)
             return
 

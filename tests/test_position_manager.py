@@ -125,11 +125,11 @@ async def test_the_first_trim_sells_and_promotes_the_stop_to_breakeven(storage):
     assert has(notes, "TRIM +25%")
     assert has(notes, "STOP \u2192")
     state = manager.managed[SPX_OCC].state
-    assert state.remaining_qty == 15  # sold ceil(21*0.25) = 6
+    assert state.remaining_qty == 10  # sold half: ceil(21*0.50) = 11
     assert state.stop_price == 0.48
     assert state.stop_reason == "breakeven"
     (position,) = await broker.get_positions()
-    assert position.qty == 15  # the broker agrees
+    assert position.qty == 10  # the broker agrees
 
 
 async def test_climbing_the_whole_ladder_arms_the_trail_and_keeps_a_runner(storage):
@@ -145,23 +145,41 @@ async def test_climbing_the_whole_ladder_arms_the_trail_and_keeps_a_runner(stora
     assert state.trail_armed is True
     assert state.fired_levels == {25, 50, 75, 100}
     assert state.remaining_qty >= 1
-    assert state.stop_reason == "trail"
+    # Armed, but break-even is still the stop: peak 1.00 is +108%, and
+    # peak * 0.40 does not clear the entry fill until +150%. The trail having
+    # armed is not the same thing as the trail protecting anything.
+    assert state.stop_reason == "breakeven"
+    assert state.stop_price == 0.48
 
 
-async def test_the_hundred_percent_rung_sells_nothing(storage):
+async def test_the_runner_levels_sell_nothing_and_are_each_reported(storage):
     feed, _, manager, pipeline, _ = build(storage)
     await enter(pipeline, feed)
 
-    feed.set(0.86)  # clears +25/+50/+75 in one gap
+    feed.set(0.86)  # clears the +25/+50 ladder and the +75 runner level
     await manager.poll_once()
     before = manager.managed[SPX_OCC].state.remaining_qty
 
     feed.set(1.00)  # clears +100%
-    await manager.poll_once()
+    notes = await manager.poll_once()
 
     state = manager.managed[SPX_OCC].state
     assert 100 in state.fired_levels
     assert state.remaining_qty == before
+    assert has(notes, "RUNNER +100%")
+
+
+async def test_a_runner_level_is_announced_once_not_on_every_quote(storage):
+    feed, _, manager, pipeline, _ = build(storage)
+    await enter(pipeline, feed)
+
+    feed.set(0.86)
+    first = await manager.poll_once()
+    feed.set(0.88)
+    second = await manager.poll_once()
+
+    assert has(first, "RUNNER +75%")
+    assert not has(second, "RUNNER +75%")
 
 
 async def test_a_gap_through_several_rungs_fires_each_one(storage):
@@ -173,8 +191,8 @@ async def test_a_gap_through_several_rungs_fires_each_one(storage):
 
     assert has(notes, "TRIM +25%")
     assert has(notes, "TRIM +50%")
-    assert has(notes, "TRIM +75%")
-    assert manager.managed[SPX_OCC].state.remaining_qty == 8
+    assert has(notes, "RUNNER +75%")  # above the ladder: reported, never sold
+    assert manager.managed[SPX_OCC].state.remaining_qty == 4
 
 
 async def test_a_rung_cannot_fire_twice(storage):
@@ -247,10 +265,14 @@ async def test_a_trailed_stop_exits_above_breakeven(storage):
     feed, _, manager, pipeline, _ = build(storage)
     await enter(pipeline, feed)
 
-    feed.set(0.90)
-    await manager.poll_once()      # trims, arms the trail
-    stop = manager.managed[SPX_OCC].state.stop_price
-    assert stop > 0.48
+    # 2.00 is +317% off the 0.48 fill, which is where the trail finally beats
+    # break-even: 2.00 * 0.55 = 1.10. At 0.90 it would still be 0.48.
+    feed.set(2.00)
+    await manager.poll_once()      # trims, arms and ratchets the trail
+    state = manager.managed[SPX_OCC].state
+    stop = state.stop_price
+    assert stop == 1.10
+    assert state.stop_reason == "trail"
 
     feed.set(stop - 0.02)
     await manager.poll_once()
