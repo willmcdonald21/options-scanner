@@ -14,6 +14,10 @@ from typing import Literal
 
 Right = Literal["C", "P"]
 
+# The advisor's sizing tiers. A lotto is a long shot taken small on purpose;
+# "Lotto Trade -- RISKY" appears as a description line inside the BUY card.
+Tier = Literal["normal", "lotto", "super_lotto"]
+
 
 @dataclass(frozen=True)
 class OptionKey:
@@ -80,6 +84,12 @@ class EntryAlert:
 
     `advisor_contracts` is recorded for the audit trail only -- position
     size comes from our own config (options_scanner/sizing.py).
+
+    `tier` *does* change our size: a lotto gets half a unit and a super lotto
+    a quarter. It defaults to "normal", which is the safe direction to be
+    wrong only in the sense that it is the advisor's own default -- a lotto
+    whose tag we failed to read would be sized as a full unit. See
+    `options_scanner/parser.py` for what is and is not detectable.
     """
 
     message_id: int
@@ -90,6 +100,7 @@ class EntryAlert:
     trim_targets: tuple[TrimTarget, ...]
     raw_title: str
     is_zero_dte: bool
+    tier: Tier = "normal"
 
 
 @dataclass(frozen=True)

@@ -32,6 +32,7 @@ from options_scanner.models import (
     ParseResult,
     RejectedAlert,
     RejectReason,
+    Tier,
     TrimTarget,
 )
 
@@ -68,6 +69,14 @@ _TITLE_MILESTONE_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?%")
 # "· 0DTE" or "· Sep 30" at the end of a title.
 _TITLE_ZERO_DTE_RE = re.compile(r"\b0DTE\b", re.IGNORECASE)
 _TITLE_DATE_TAG_RE = re.compile(r"·\s*(?P<mon>[A-Za-z]{3})\s*(?P<day>\d{1,2})\s*$")
+
+# " Lotto Trade -- RISKY" / " Super Lotto Trade -- Super RISKY", which the
+# advisor puts in the BUY card's description, right under the "Entered ..."
+# line. Checked "super" first: "super lotto" contains "lotto", so testing for
+# the plain tag first would size every super lotto as a lotto -- twice the
+# intended risk on the riskiest trades there are.
+_SUPER_LOTTO_RE = re.compile(r"\bsuper\s+lotto\b", re.IGNORECASE)
+_LOTTO_RE = re.compile(r"\blotto\b", re.IGNORECASE)
 
 _MONEY_RE = re.compile(r"-?\$?([\d,]+\.?\d*)")
 _TRIM_TARGET_RE = re.compile(r"(?P<pct>\d+(?:\.\d+)?)%\s+\$?(?P<price>[\d,]+\.?\d*)")
@@ -215,6 +224,34 @@ def _check_trim_targets(
     return None
 
 
+def detect_tier(card: ParsedCard) -> Tier:
+    """The advisor's sizing tier, read off the card.
+
+    Searched over the title, the description and the field values, because the
+    tag turns up in more than one place: usually as a description line right
+    under "Entered ...", but also under a "Notes:" field on some cards.
+
+    Two things this cannot do, both worth knowing before trusting the size:
+
+    * The advisor sometimes says it in a *separate chat message* -- "Super
+      lotto size less" on its own line, with no card at all. The bot reads
+      cards, so that one is invisible here and the trade is sized as normal.
+    * A tag worded in some way that contains neither "lotto" nor "super
+      lotto" reads as normal too.
+
+    Both failures size *up*, toward a full unit. There is no way to fix that
+    from inside the parser, which is why it is written down here.
+    """
+    haystack = "\n".join(
+        [card.title or "", card.description or "", *(card.fields or {}).values()]
+    )
+    if _SUPER_LOTTO_RE.search(haystack):
+        return "super_lotto"
+    if _LOTTO_RE.search(haystack):
+        return "lotto"
+    return "normal"
+
+
 def parse_card(card: ParsedCard, today: date) -> ParseResult:
     """Classify and validate one card. Never raises.
 
@@ -287,6 +324,7 @@ def _parse_buy(card: ParsedCard, title: str, today: date) -> ParseResult:
 
     return EntryAlert(
         message_id=card.message_id,
+        tier=detect_tier(card),
         option=option,
         entry_price=entry_price,
         advisor_contracts=advisor_contracts,

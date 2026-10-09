@@ -16,7 +16,12 @@ from options_scanner.models import (
     RejectedAlert,
     RejectReason,
 )
-from options_scanner.parser import TRIM_TARGET_TOLERANCE, ParsedCard, parse_card
+from options_scanner.parser import (
+    TRIM_TARGET_TOLERANCE,
+    ParsedCard,
+    detect_tier,
+    parse_card,
+)
 from options_scanner.text_import import parse_cards
 
 FIXTURE = Path(__file__).parent / "fixtures" / "swift_chat_dump.txt"
@@ -334,3 +339,126 @@ def test_the_corpus_entry_alerts_all_pass_the_ladder_checksum():
     for alert in entries:
         assert alert.entry_price > 0
         assert len(alert.trim_targets) == 4
+
+
+# --- the sizing tier -----------------------------------------------------
+
+# The real AMD card from the corpus, verbatim. The tag is a description line
+# directly under "Entered ...".
+LOTTO_ALERT = """BUY — AMD 620C · 0DTE
+Entered AMD Sep21 '26 620 Call
+ Lotto Trade — RISKY
+Open Live Dashboard →
+Entry
+$1.40
+Contracts
+25
+Cost
+$3,500
+Trim Targets
+25%   $1.750
+50%   $2.100
+75%   $2.450
+100%  $2.800
+
+Not financial advice"""
+
+# The real SPX card from the corpus.
+SUPER_LOTTO_ALERT = """BUY — SPX 7765P · 0DTE
+Entered SPX Sep21 '26 7765 Put
+ Super Lotto Trade — Super RISKY
+Open Live Dashboard →
+Entry
+$0.725
+Contracts
+15
+Cost
+$1,088
+Trim Targets
+25%   $0.906
+50%   $1.088
+75%   $1.269
+100%  $1.450
+
+Not financial advice"""
+
+SEPT_21 = date(2026, 9, 21)
+
+
+def test_an_untagged_card_is_a_normal_unit():
+    assert _parse(SPEC_ALERT).tier == "normal"
+
+
+def test_the_real_lotto_card_is_detected():
+    alert = _parse(LOTTO_ALERT, today=SEPT_21)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.tier == "lotto"
+
+
+def test_the_real_super_lotto_card_is_detected():
+    """'super lotto' contains 'lotto', so the order of the two checks is the
+    whole test: read as a plain lotto this would be sized at half a unit
+    instead of a quarter -- twice the intended risk on the riskiest trade
+    there is."""
+    alert = _parse(SUPER_LOTTO_ALERT, today=SEPT_21)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.tier == "super_lotto"
+
+
+def test_the_tag_is_found_in_a_notes_field_too():
+    """Some cards carry it under "Notes:" rather than as a description line."""
+    card = ParsedCard(
+        message_id=1,
+        title="BUY — AMD 620C · 0DTE",
+        description="Entered AMD Sep21 '26 620 Call",
+        fields={"Notes": " Lotto Trade — RISKY"},
+        footer="",
+        timestamp=datetime(2026, 9, 21),
+    )
+
+    assert detect_tier(card) == "lotto"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        (" Lotto Trade — RISKY", "lotto"),
+        (" Super Lotto Trade — Super RISKY", "super_lotto"),
+        ("super lotto", "super_lotto"),
+        ("SUPER  LOTTO", "super_lotto"),  # whitespace and case are not signal
+        ("lottery ticket", "normal"),     # not a word match
+        ("", "normal"),
+    ],
+)
+def test_tier_detection_cases(text, expected):
+    card = ParsedCard(
+        message_id=1, title="BUY — AMD 620C", description=text, fields={},
+        footer="", timestamp=datetime(2026, 9, 21),
+    )
+
+    assert detect_tier(card) == expected
+
+
+def test_the_corpus_tiers_are_what_the_advisor_wrote():
+    """Of the seven BUY cards in the 80-message corpus: two lottos, one super
+    lotto, four normal."""
+    _, results = _fixture_results()
+    entries = [r for r in results if isinstance(r, EntryAlert)]
+    tiers = sorted(a.tier for a in entries)
+
+    assert tiers.count("lotto") == 2
+    assert tiers.count("super_lotto") == 1
+    assert tiers.count("normal") == 4
+
+
+def test_a_tier_said_only_in_chat_is_not_detectable():
+    """The advisor also posts "Super lotto size less" as a bare chat message,
+    outside any card. The bot reads cards, so that trade sizes as normal --
+    a known gap, asserted here so it cannot be mistaken for a bug later.
+
+    It is also the direction that sizes UP, which is why the README says to
+    watch the channel on lotto days.
+    """
+    assert parse_cards("Super lotto size less") == []
