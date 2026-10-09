@@ -22,6 +22,7 @@ from options_scanner.notifier import (
     alert_parsed,
     alert_rejected,
     broker_disconnected,
+    contracts,
     daily_loss_limit,
     end_of_day,
     entry_filled,
@@ -320,3 +321,10 @@ def test_the_entry_card_is_unchanged_without_a_sizing_note():
     note = entry_filled(option=OPT, qty=6, fill_price=0.475, cost=285.0, jump_url=JUMP, today=TODAY)
 
     assert note.description == "Entered SPX Oct06 '26 7815 Put"
+
+
+def test_a_single_contract_is_not_pluralized():
+    """Routine now that a super lotto is a quarter of a unit."""
+    assert contracts(1) == "1 contract"
+    assert contracts(0) == "0 contracts"
+    assert contracts(21) == "21 contracts"

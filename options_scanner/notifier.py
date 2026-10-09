@@ -197,6 +197,12 @@ def signed_pct(value: float) -> str:
     return f"{value:+.1f}%"
 
 
+def contracts(count: int) -> str:
+    """"1 contract", not "1 contracts". A single-contract position is routine
+    now that a lotto is a quarter of a unit."""
+    return f"{count} contract{'' if count == 1 else 's'}"
+
+
 def alert_parsed(
     *,
     option: OptionKey,
@@ -226,8 +232,8 @@ def alert_parsed(
         jump_url=jump_url,
     )
     note.add("Advisor entry", price(entry_price))
-    note.add("Advisor size", f"{advisor_contracts} contracts")
-    note.add("Our size", f"{our_contracts} contracts · {money(cost)}")
+    note.add("Advisor size", contracts(advisor_contracts))
+    note.add("Our size", f"{contracts(our_contracts)} · {money(cost)}")
     if levels:
         note.add("Trim Targets", ladder_block(levels), inline=False)
     note.add("Contract", f"`{occ_symbol}`", inline=False)
