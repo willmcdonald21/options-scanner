@@ -47,6 +47,7 @@ from options_scanner.notifier import (
     entry_filled,
     entry_unfilled,
     error as error_note,
+    money,
     partial_fill,
     unreadable_paste,
     would_place_entry,
@@ -54,7 +55,14 @@ from options_scanner.notifier import (
 from options_scanner.parser import parse_card
 from options_scanner.risk import RiskGate
 from options_scanner.rules import level_price
-from options_scanner.sizing import compute_contracts, position_cost, sizing_note, unit_cap
+from options_scanner.sizing import (
+    Budget,
+    affords_one_contract,
+    compute_contracts,
+    position_cost,
+    sizing_note,
+    trade_budget,
+)
 from options_scanner.storage import (
     STATUS_ACCEPTED,
     STATUS_DUPLICATE,
@@ -333,12 +341,40 @@ class AlertPipeline:
         reference_price = alert.entry_price
         cap_price = reference_price * (1 + settings.entry.max_slippage_pct / 100.0)
 
+        max_price = settings.risk.max_contract_price
+        if max_price is not None:
+            if reference_price > max_price:
+                detail = (
+                    f"entry is {reference_price:.2f}, above the {max_price:.2f} per-contract "
+                    "limit. Nothing was ordered."
+                )
+                record(STATUS_SKIPPED, f"contract_too_expensive: {detail}")
+                self.storage.bump_day(trading_day, alerts_skipped=1)
+                result.add(
+                    REACTION_SKIPPED,
+                    alert_skipped(
+                        reason="contract_too_expensive", detail=detail, jump_url=jump_url,
+                        option=alert.option, today=trading_day,
+                    ),
+                )
+                return
+            # The limit is on what we could PAY, not only on the quoted entry:
+            # a $2.95 alert's slippage walk would otherwise reach $3.25.
+            cap_price = min(cap_price, max_price)
+
         if quote is not None and quote.ask and settings.entry.skip_if_ask_above_cap:
             if quote.ask > cap_price:
+                if max_price is not None and cap_price >= max_price:
+                    why = f"the {max_price:.2f} per-contract limit"
+                else:
+                    why = (
+                        f"the slippage cap of {cap_price:.3f} "
+                        f"({settings.entry.max_slippage_pct:.0f}% over the {reference_price:.3f} "
+                        "alert entry)"
+                    )
                 detail = (
-                    f"ask is {quote.ask:.3f} but the slippage cap is {cap_price:.3f} "
-                    f"({settings.entry.max_slippage_pct:.0f}% over the {reference_price:.3f} alert "
-                    "entry). The move went without us; not chasing."
+                    f"ask is {quote.ask:.3f}, above {why}. "
+                    "The move went without us; not chasing."
                 )
                 record(STATUS_SKIPPED, f"ask_above_cap: {detail}")
                 self.storage.bump_day(trading_day, alerts_skipped=1)
@@ -353,8 +389,8 @@ class AlertPipeline:
 
         # Our own size, from our own account. The advisor's contract count
         # reflects their account and is recorded for the audit trail only.
-        budget = await self._unit_cap(alert.tier)
-        if budget is None:
+        sized = await self._trade_budget(alert.tier)
+        if sized is None:
             detail = (
                 "could not read account equity, and the unit is a percent of it. "
                 "Sizing off a guess is how one bad read becomes a position nobody "
@@ -370,7 +406,37 @@ class AlertPipeline:
                 ),
             )
             return
-        cap_usd, equity, equity_is_assumed = budget
+        budget, equity_is_assumed = sized
+        cap_usd = budget.cap_usd
+        size_note = sizing_note(
+            equity=budget.real_equity,
+            unit_pct=settings.risk.unit_pct_of_account,
+            tier=alert.tier,
+            cap_usd=cap_usd,
+            equity_is_assumed=equity_is_assumed,
+            basis=budget.basis,
+            small_account_budget_usd=settings.risk.small_account_budget_usd,
+            sized_as=budget.sizing_equity,
+        )
+
+        if not affords_one_contract(cap_usd, reference_price):
+            # compute_contracts would floor this up to one contract. On a small
+            # account that is not "slightly over budget": a super lotto's $75
+            # becomes a $295 position, four times the intended risk.
+            detail = (
+                f"one contract costs {money(reference_price * 100)} but this "
+                f"trade's budget is {money(cap_usd)}. {size_note}. Nothing was ordered."
+            )
+            record(STATUS_SKIPPED, f"budget_too_small: {detail}")
+            self.storage.bump_day(trading_day, alerts_skipped=1)
+            result.add(
+                REACTION_SKIPPED,
+                alert_skipped(
+                    reason="budget_too_small", detail=detail, jump_url=jump_url,
+                    option=alert.option, today=trading_day,
+                ),
+            )
+            return
 
         contracts = compute_contracts(
             reference_price,
@@ -378,13 +444,6 @@ class AlertPipeline:
             max_contracts=settings.risk.max_contracts_per_trade,
         )
         cost = position_cost(contracts, reference_price)
-        size_note = sizing_note(
-            equity=equity,
-            unit_pct=settings.risk.unit_pct_of_account,
-            tier=alert.tier,
-            cap_usd=cap_usd,
-            equity_is_assumed=equity_is_assumed,
-        )
 
         ladder = [
             (level, level_price(reference_price, level))
@@ -551,35 +610,20 @@ class AlertPipeline:
             ),
         )
 
-    async def _unit_cap(self, tier: str) -> tuple[float, float, bool] | None:
-        """The dollar budget for one trade: (cap, equity, equity_is_assumed).
+    async def _trade_budget(self, tier: str) -> tuple[Budget, bool] | None:
+        """The budget for one trade, and whether the equity behind it was
+        assumed.
 
         None means the equity read failed and the caller must skip the alert.
-        That is the whole reason this returns a tuple rather than a float: with
-        the unit expressed as a percent of equity, a failed read has no safe
-        default. Falling back to a configured number would size a live trade
-        off a stale guess, and silently sizing to the ceiling would do the same
-        thing with extra steps.
+        With the unit expressed as a percent of equity, a failed read has no
+        safe default: falling back to a configured number would size a live
+        trade off a stale guess.
 
         dry_run is the one case where an assumed equity is correct -- it has no
-        broker at all -- and the flag it returns is what makes the entry card
-        say so.
+        broker at all -- and the flag is what makes the card say so.
         """
-        risk = self.settings.risk
-
         if self.broker is None:
-            return (
-                unit_cap(
-                    risk.fallback_equity,
-                    risk.unit_pct_of_account,
-                    tier,
-                    lotto_multiplier=risk.lotto_multiplier,
-                    super_lotto_multiplier=risk.super_lotto_multiplier,
-                    ceiling_usd=risk.max_usd_per_trade,
-                ),
-                risk.fallback_equity,
-                True,
-            )
+            return self._budget_from(self.settings.risk.fallback_equity, tier), True
 
         try:
             snapshot = await self.broker.get_account()
@@ -594,17 +638,20 @@ class AlertPipeline:
             logger.warning("account equity read as %r; refusing to size off it", equity)
             return None
 
-        return (
-            unit_cap(
-                equity,
-                risk.unit_pct_of_account,
-                tier,
-                lotto_multiplier=risk.lotto_multiplier,
-                super_lotto_multiplier=risk.super_lotto_multiplier,
-                ceiling_usd=risk.max_usd_per_trade,
-            ),
+        return self._budget_from(equity, tier), False
+
+    def _budget_from(self, equity: float, tier: str) -> Budget:
+        risk = self.settings.risk
+        return trade_budget(
             equity,
-            False,
+            tier,
+            unit_pct=risk.unit_pct_of_account,
+            small_account_below=risk.small_account_below,
+            small_account_budget_usd=risk.small_account_budget_usd,
+            lotto_multiplier=risk.lotto_multiplier,
+            super_lotto_multiplier=risk.super_lotto_multiplier,
+            ceiling_usd=risk.max_usd_per_trade,
+            max_sizing_equity=risk.max_sizing_equity,
         )
 
     async def _quote(self, spec) -> Quote | None:

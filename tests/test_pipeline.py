@@ -612,3 +612,89 @@ async def test_a_live_sizing_line_does_not_claim_the_equity_was_assumed(storage)
     description = find(result, "PARSED").description
     assert "$20,000 equity" in description
     assert "assumed" not in description
+
+
+# --- the small live account ----------------------------------------------
+#
+# ~$1,100 live, tested on a paper account shared with warrior_bot that holds
+# far more. These pin the behaviour the user chose for it.
+
+SMALL_ACCOUNT = {
+    "max_sizing_equity": 1_100.0,
+    "small_account_below": 5_000.0,
+    "small_account_budget_usd": 300.0,
+    "max_usd_per_trade": 300.0,
+}
+
+
+def _small(storage, broker=None, **risk):
+    settings = make_settings(risk={**SMALL_ACCOUNT, **risk})
+    return AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+
+async def test_the_shared_paper_account_is_sized_like_the_live_one(storage):
+    """FakeBroker reports $100,000. Sized as $1,100 that is the $300
+    small-account budget: 6 contracts at $47.50, not the 21 a $100k account
+    would buy."""
+    result = await paste(_small(storage, FakeBroker()))
+
+    note = find(result, "PARSED")
+    values = {name: value for name, value, _ in note.fields}
+    assert values["Our size"].startswith("6 contracts")
+    assert "$300 small-account budget" in note.description
+    assert "sized as $1,100" in note.description
+
+
+async def test_a_contract_above_the_price_limit_is_skipped(storage):
+    broker = FakeBroker()
+    result = await paste(_small(storage, broker, max_contract_price=0.40))
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    assert "0.40" in find(result, "skipped").description
+
+
+async def test_the_price_limit_also_caps_the_entry_walk(storage):
+    """0.475 + 10% slippage would walk to 0.523. With a 0.50 limit the walk
+    stops at 0.50 -- the limit is on what we could pay."""
+    result = await paste(_small(storage, broker=None, max_contract_price=0.50))
+
+    values = {name: value for name, value, _ in find(result, "WOULD BUY").fields}
+    assert values["Walk to"] == "$0.50 max"
+
+
+async def test_an_ask_above_the_price_limit_is_not_chased(storage):
+    broker = FakeBroker(bid=0.50, ask=0.51)
+    result = await paste(_small(storage, broker, max_contract_price=0.50))
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    # The limit, not slippage, is what refused it -- the card must say so.
+    assert "0.50 per-contract limit" in find(result, "skipped").description
+
+
+async def test_a_tier_budget_that_cannot_buy_one_contract_is_skipped(storage):
+    """A super lotto on a $100 budget gets $25, and one contract costs
+    $47.50. compute_contracts would floor that up to one contract -- nearly
+    double the intended risk. Skip instead, and say why."""
+    broker = FakeBroker()
+    pipeline = _small(storage, broker, small_account_budget_usd=100.0)
+
+    result = await paste(pipeline, text=_tagged(SPEC_ALERT, " Super Lotto Trade — Super RISKY"))
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    description = find(result, "skipped").description
+    assert "$47.50" in description
+    assert "$25.00" in description
+
+
+async def test_a_lotto_that_can_afford_a_contract_still_trades(storage):
+    """$150 buys three at $47.50 -- the tier shrinks the size, it does not
+    skip."""
+    pipeline = _small(storage, FakeBroker())
+
+    result = await paste(pipeline, text=_tagged(SPEC_ALERT, " Lotto Trade — RISKY"))
+
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert values["Our size"].startswith("3 contracts")
