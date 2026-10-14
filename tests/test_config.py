@@ -195,6 +195,10 @@ def test_a_bad_force_exit_time_also_fails_early():
         ("risk", {"lotto_multiplier": 0}),
         ("risk", {"super_lotto_multiplier": 1.5}),
         ("risk", {"fallback_equity": 0}),
+        ("risk", {"max_sizing_equity": 0}),
+        ("risk", {"small_account_below": -1}),
+        ("risk", {"small_account_budget_usd": 0}),
+        ("risk", {"max_contract_price": 0}),
         ("stops", {"confirm_polls": 0}),
         ("stops", {"source_blend": 1.5}),
         ("risk", {"max_usd_per_trade": 0}),
@@ -241,3 +245,27 @@ def test_a_custom_trail_schedule_carries_through_to_the_rules_engine():
 
 def test_the_confirmation_window_is_shared_with_the_rules_engine():
     assert make_settings(stops={"confirm_polls": 3}).rules().confirm_breaches == 3
+
+
+
+def test_the_committed_config_is_sized_for_the_small_live_account(monkeypatch):
+    """The numbers the user chose for the ~$1,100 options account. A change to
+    any of these changes how much money is at risk, so it should show up as a
+    failing test, not a quiet diff."""
+    env(monkeypatch)
+    risk = load_settings(load_env=False).risk
+
+    assert risk.max_sizing_equity == 1100
+    assert risk.small_account_below == 5000
+    assert risk.small_account_budget_usd == 300
+    assert risk.max_contract_price == 3.00
+    assert risk.max_usd_per_trade == 300
+    assert risk.max_open_positions == 2
+    assert risk.max_daily_loss_usd == 400
+
+
+def test_the_new_sizing_limits_are_off_unless_configured():
+    risk = make_settings().risk
+
+    assert risk.max_sizing_equity is None
+    assert risk.max_contract_price is None

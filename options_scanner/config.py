@@ -153,6 +153,21 @@ class RiskSettings(BaseModel):
     # that fails skips the alert rather than sizing off this.
     fallback_equity: float = Field(default=32000.0, gt=0)
 
+    # Size as though the account held at most this much. For the shared paper
+    # account: IBKR allows one paper account per login, so paper testing runs
+    # on a balance far larger than the live options account, and without this
+    # it would trade like a different account. None = size off the real figure.
+    max_sizing_equity: float | None = Field(default=None, gt=0)
+
+    # Below this equity a percent of the account cannot buy a contract, so a
+    # fixed dollar budget is used instead of unit_pct_of_account. 0 disables.
+    small_account_below: float = Field(default=5000.0, ge=0)
+    small_account_budget_usd: float = Field(default=300.0, gt=0)
+
+    # Skip any contract dearer than this, and never let the entry walk pay
+    # more. None = no limit.
+    max_contract_price: float | None = Field(default=None, gt=0)
+
     # An absolute ceiling applied *after* the percentage, so a large account
     # cannot quietly produce a huge position.
     max_usd_per_trade: float = Field(default=1000.0, gt=0)

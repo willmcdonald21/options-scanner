@@ -60,20 +60,37 @@ stops:
   exit_retries: 3           # then escalate: an exit that won't fill must not stay quiet
 
 risk:
+  # Sized for the ~$1,100 live options account.
+  #
+  # The paper account is shared with warrior_bot (IBKR allows one paper
+  # account per login) and holds far more, so sizing works from at most
+  # max_sizing_equity. Paper then produces the same sizes and skips as live.
+  max_sizing_equity: 1100
+
+  # Below this, 3% of equity cannot buy a contract ($33 on $1,100), so each
+  # trade gets a fixed budget instead -- targeting $200-300.
+  small_account_below: 5000
+  small_account_budget_usd: 300
+
+  # Skip anything dearer than this, and never let the entry walk pay more.
+  max_contract_price: 3.00
+
   # "1 unit = 2-5% of your account; lotto = half; super lotto = a quarter."
-  # Read off live net liquidation at the moment the alert lands.
+  # The unit applies at or above small_account_below; the tier multipliers
+  # apply to either budget. A tier whose budget cannot buy one contract is
+  # skipped, never rounded up.
   unit_pct_of_account: 3.0
-  lotto_multiplier: 0.5
-  super_lotto_multiplier: 0.25
+  lotto_multiplier: 0.5         # $150 on a $300 budget
+  super_lotto_multiplier: 0.25  # $75
 
   # dry_run has no broker to ask for equity. A LIVE equity read that fails
   # skips the alert instead of falling back to this.
-  fallback_equity: 32000
+  fallback_equity: 1100
 
-  max_usd_per_trade: 1000       # absolute ceiling on top of the percentage
-  max_contracts_per_trade: 50   # drop to 1 for the first live sessions
-  max_open_positions: 3
-  max_daily_loss_usd: 1000
+  max_usd_per_trade: 300        # absolute ceiling on any budget
+  max_contracts_per_trade: 50
+  max_open_positions: 2         # up to ~55% of $1,100 deployed
+  max_daily_loss_usd: 400       # halts new entries for the day
   max_trades_per_day: 10
 
 market:
