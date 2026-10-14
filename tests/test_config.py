@@ -72,7 +72,20 @@ def test_the_committed_config_is_valid(monkeypatch):
     """The config.yaml in the repo must actually load, or the first run fails."""
     env(monkeypatch)
     settings = load_settings(load_env=False)
-    assert settings.mode is Mode.DRY_RUN  # the committed default is the safe one
+    assert settings.mode is not None
+
+
+def test_the_committed_config_can_never_trade_real_money(monkeypatch):
+    """The invariant that matters. The committed config places real orders on
+    the paper account, which is paper money. Live needs three deliberate
+    changes -- mode, live_confirmed and a live port -- plus a typed
+    confirmation at startup, and none of them may be committed by accident."""
+    env(monkeypatch)
+    settings = load_settings(load_env=False)
+
+    assert settings.mode is not Mode.LIVE
+    assert settings.live_confirmed is False
+    assert settings.broker.port not in settings.broker.LIVE_PORTS
 
 
 # --- secret hygiene ------------------------------------------------------

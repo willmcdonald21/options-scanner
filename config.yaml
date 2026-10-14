@@ -5,7 +5,7 @@
 # paper   : trade the paper account
 # live    : real money; also requires live_confirmed below AND a typed
 #           confirmation at startup
-mode: dry_run
+mode: paper          # real orders to the PAPER account (DUR662028, shared with warrior_bot)
 live_confirmed: false
 
 entry:
@@ -104,7 +104,7 @@ broker:
   #             sent to the broker. The safe default.
   # ibkr      = real orders to whatever account the port points at. On 4002
   #             that is the paper account, but it is still a real order path.
-  kind: simulated
+  kind: ibkr        # real orders through Gateway; on 4002 that is the paper account
   host: 127.0.0.1
   port: 4002        # Gateway paper. 4001/7496 are live and are refused here.
   client_id: 12     # must be unique per client; warrior_bot holds 11
