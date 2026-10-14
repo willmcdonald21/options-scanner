@@ -209,16 +209,25 @@ cmd_doctor() {
   fi
 
   if [[ -z "$saccount" && -z "$waccount" ]]; then
-    # One account under the login is the state this was built for, and blank is
-    # correct there. It stops being correct the moment a second one appears.
-    if [[ "$managed" == *,* ]]; then
+    # One account under the login is the shared-paper setup: IBKR allows one
+    # paper account per login, so both bots trade it. Blank is correct there.
+    # It stops being correct the moment a second account appears.
+    if [[ -z "$managed" ]]; then
+      # Without the gateway there is nothing to ask. Saying "ok" here would
+      # vouch for the one check most likely to stop a bot from starting.
+      warn "could not check how many accounts this login manages — gateway is down"
+    elif [[ "$managed" == *,* ]]; then
       bad "this login manages several accounts ($managed) but neither bot names one"
       note "set broker.account (config.yaml) and trading.account (warrior config/config.yaml)"
     else
-      ok "neither bot names an account, and the login manages one${managed:+ ($managed)}"
+      ok "both bots share $managed — the stock-only guard below is what keeps them apart"
     fi
   elif [[ "$saccount" == "$waccount" ]]; then
-    bad "both bots are pointed at the same account ($saccount) — that is not isolation"
+    # Naming the same account in both is the shared-paper setup made explicit.
+    ok "both bots name $saccount — shared; the stock-only guard below keeps them apart"
+    if [[ -n "$managed" && ",$managed," != *",$saccount,"* ]]; then
+      bad "$saccount is not managed by this login ($managed)"
+    fi
   else
     ok "scanner=${saccount:-(unset)} warrior=${waccount:-(unset)} are different"
     for pair in "scanner:$saccount" "warrior:$waccount"; do
@@ -239,31 +248,46 @@ cmd_doctor() {
     ok "warrior_bot's panic path cancels per-order, not globally"
   fi
 
-  head_ "warrior_bot interference guard"
-  local main="$WARRIOR_DIR/warrior_bot/main.py"
-  if grep -q 'secType == "STK"' "$main" 2>/dev/null; then
-    ok "the secType filter is present in the working tree"
-    local wp; wp="$(warrior_pid)"
-    if [[ -n "$wp" ]]; then
-      # A running process started before the patch was written is still running
-      # the unpatched code, and will flatten our option positions.
-      if [[ -n "$(find "$main" -newer "/proc/$wp" 2>/dev/null)" ]] \
-         || [[ "$(ps -o lstart= -p "$wp" | xargs -0 date -j -f "%a %b %d %T %Y" +%s 2>/dev/null || echo 0)" \
-               -lt "$(stat -f %m "$main")" ]]; then
-        bad "warrior_bot's RUNNING process predates the patch — restart it (./ops.sh restart warrior)"
-      else
-        ok "warrior_bot's running process is newer than the patch"
-      fi
+  head_ "warrior_bot interference guard (shared paper account)"
+  # IBKR allows one paper account per login, so warrior_bot shares ours.
+  # Account scoping cannot separate the bots there; security type does. Each
+  # of these files must ignore anything that is not a stock, or warrior_bot
+  # acts on our option positions.
+  local -a guard_files=(
+    'warrior_bot/main.py|secType == "STK"|its reconciliation watchdog flattens our options within 30s'
+    'warrior_bot/utils/panic.py|is_stock(p.contract)|its 15:55 EOD flatten closes our options every day'
+    'warrior_bot/risk/account_state.py|is_stock(|our options count against its risk limits and slots'
+  )
+  local newest=0 entry rel needle consequence path m
+  for entry in "${guard_files[@]}"; do
+    IFS='|' read -r rel needle consequence <<<"$entry"
+    path="$WARRIOR_DIR/$rel"
+    if grep -qF "$needle" "$path" 2>/dev/null; then
+      ok "${rel##*/}: stock-only filter present"
+      m="$(stat -f %m "$path")"
+      (( m > newest )) && newest=$m
     else
-      warn "warrior_bot is not running, so nothing to verify"
+      bad "${rel##*/}: stock-only filter MISSING — $consequence"
     fi
-  else
-    bad "the secType filter is MISSING — warrior_bot will flatten our option positions within 30s"
-  fi
-  if git -C "$WARRIOR_DIR" merge-base --is-ancestor ignore-foreign-option-positions main 2>/dev/null; then
-    ok "the patch is merged into warrior_bot's main"
-  else
-    warn "the patch is NOT on main — a 'git checkout main' would silently undo it"
+    if ! git -C "$WARRIOR_DIR" show "main:$rel" 2>/dev/null | grep -qF "$needle"; then
+      warn "${rel##*/}: the filter is not on warrior_bot's main — a checkout would undo it"
+    fi
+  done
+
+  # A process started before the newest of those files is still running the
+  # old code, whatever the working tree says.
+  local wp; wp="$(warrior_pid)"
+  if [[ -z "$wp" ]]; then
+    warn "warrior_bot is not running, so nothing to verify"
+  elif (( newest > 0 )); then
+    local started
+    started="$(date -j -f "%a %b %d %T %Y" "$(ps -o lstart= -p "$wp" | sed 's/ *$//')" +%s 2>/dev/null || echo 0)"
+    if (( started < newest )); then
+      bad "warrior_bot's RUNNING process predates the stock-only patch — restart it"
+      note "kill the Python child only (not SCREEN); its supervisor relaunches it on current code"
+    else
+      ok "warrior_bot's running process is newer than the stock-only patch"
+    fi
   fi
 
   head_ "options-scanner config"
