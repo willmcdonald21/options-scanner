@@ -269,7 +269,9 @@ cmd_doctor() {
     else
       bad "${rel##*/}: stock-only filter MISSING — $consequence"
     fi
-    if ! git -C "$WARRIOR_DIR" show "main:$rel" 2>/dev/null | grep -qF "$needle"; then
+    # Captured, not piped: main.py is larger than the pipe buffer, so `| grep -q`
+    # could exit before git finishes, and pipefail would report the SIGPIPE.
+    if ! grep -qF "$needle" <<<"$(git -C "$WARRIOR_DIR" show "main:$rel" 2>/dev/null)"; then
       warn "${rel##*/}: the filter is not on warrior_bot's main — a checkout would undo it"
     fi
   done
@@ -324,16 +326,36 @@ cmd_doctor() {
   fi
 
   head_ "Machine"
-  local sleep_ac
+  local sleep_ac holder="" pid assertions batt
   sleep_ac="$(pmset -g custom 2>/dev/null | sed -n '/AC Power/,/^$/p' | awk '/^ *sleep/{print $2; exit}')"
+  # Read once and grep the copy. Piping pmset straight into `grep -q` fails
+  # under pipefail: grep exits on the first match, pmset dies of SIGPIPE, and
+  # the pipeline reports failure even though the match was found.
+  assertions="$(pmset -g assertions 2>/dev/null)"
+  # A caffeinate counts only if it holds a system-sleep assertion. A bare
+  # `caffeinate -d` keeps the display on and the Mac still sleeps.
+  for pid in $(pgrep -x caffeinate); do
+    if grep -qE "pid ${pid}\(caffeinate\):.*Prevent(UserIdle)?SystemSleep" <<<"$assertions"; then
+      holder="$pid"; break
+    fi
+  done
   if [[ "$sleep_ac" == "0" ]]; then
-    ok "the Mac never sleeps on AC power"
+    ok "the Mac never sleeps on AC power (pmset)"
+  elif [[ -n "$holder" ]]; then
+    # Protected, but only for as long as one unsupervised process lives.
+    warn "sleep held off by caffeinate (pid $holder, up $(uptime_of "$holder")) — ends the moment it stops"
+    note "if it dies: nohup caffeinate -ims >/dev/null 2>&1 &"
   else
-    bad "pmset sleep=$sleep_ac on AC — a sleeping Mac has no synthetic stop"
-    note "fix: sudo pmset -c sleep 0 disksleep 0"
+    bad "pmset sleep=$sleep_ac and no caffeinate holding sleep off — the Mac sleeps and every stop with it"
+    note "start: nohup caffeinate -ims >/dev/null 2>&1 &   or permanently: sudo pmset -c sleep 0 disksleep 0"
   fi
-  if pgrep -x caffeinate >/dev/null; then
-    warn "relying on a caffeinate process; it is unsupervised and dies silently"
+  # On a laptop, two things defeat any sleep setting.
+  batt="$(pmset -g batt 2>/dev/null)"
+  if grep -q "InternalBattery" <<<"$batt"; then
+    if grep -q "Battery Power" <<<"$batt"; then
+      warn "running on battery — plug in (caffeinate -s and pmset -c only apply on AC)"
+    fi
+    note "closing the lid sleeps a MacBook regardless — keep it open, or use clamshell mode"
   fi
 
   head_ "launchd agent"
