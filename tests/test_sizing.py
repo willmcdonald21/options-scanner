@@ -1,10 +1,13 @@
 import pytest
 
 from options_scanner.sizing import (
+    affords_one_contract,
     compute_contracts,
     position_cost,
     sizing_note,
+    sizing_equity,
     tier_multiplier,
+    trade_budget,
     unit_cap,
 )
 
@@ -167,3 +170,127 @@ def test_the_sizing_note_flags_an_assumed_equity():
 
     assert "assumed equity" in assumed
     assert "assumed" not in real
+
+
+
+# --- the small-account band ----------------------------------------------
+#
+# The live options account holds ~$1,100. 3% of that is $33, which buys
+# nothing, so below $5,000 a fixed $300 budget is used instead.
+
+SMALL = dict(
+    unit_pct=3.0,
+    small_account_below=5_000.0,
+    small_account_budget_usd=300.0,
+    ceiling_usd=300.0,
+    max_sizing_equity=1_100.0,
+)
+
+
+def _size(equity: float, price: float, tier: str = "normal") -> int | None:
+    """Contracts the pipeline would buy, or None for a skip."""
+    budget = trade_budget(equity, tier, **SMALL)
+    if not affords_one_contract(budget.cap_usd, price):
+        return None
+    return compute_contracts(price, budget.cap_usd, max_contracts=50)
+
+
+@pytest.mark.parametrize(
+    "price,expected,cost",
+    [
+        (0.475, 6, 285.0),
+        (0.75, 4, 300.0),   # the dearest price where both trim rungs still fire
+        (1.40, 2, 280.0),
+        (2.95, 1, 295.0),
+        (3.00, 1, 300.0),
+    ],
+)
+def test_a_small_account_targets_two_to_three_hundred_per_trade(price, expected, cost):
+    assert _size(1_100.0, price) == expected
+    assert position_cost(expected, price) == pytest.approx(cost)
+
+
+def test_the_small_account_band_ends_at_five_thousand():
+    assert trade_budget(4_999.99, **{**SMALL, "max_sizing_equity": None}).basis == "small_account"
+    assert trade_budget(5_000.00, **{**SMALL, "max_sizing_equity": None}).basis == "unit"
+
+
+def test_at_or_above_the_band_the_percentage_unit_takes_over():
+    budget = trade_budget(
+        8_000.0, **{**SMALL, "max_sizing_equity": None, "ceiling_usd": 1_000.0}
+    )
+
+    assert budget.basis == "unit"
+    assert budget.cap_usd == pytest.approx(240.0)  # 3% of $8,000
+
+
+@pytest.mark.parametrize(
+    "tier,price,expected",
+    [
+        ("lotto", 0.475, 3),       # $150 buys three
+        ("lotto", 1.40, 1),        # $150 buys one
+        ("lotto", 2.95, None),     # $150 cannot buy a $295 contract: skip
+        ("super_lotto", 0.475, 1),  # $75 buys one
+        ("super_lotto", 1.40, None),
+        ("super_lotto", 2.95, None),
+    ],
+)
+def test_a_tier_that_cannot_afford_one_contract_is_skipped(tier, price, expected):
+    """Floored up to one contract, a super lotto's $75 budget would become a
+    $295 position: four times the intended risk on the riskiest trade."""
+    assert _size(1_100.0, price, tier) == expected
+
+
+def test_the_paper_account_sizes_exactly_like_the_live_one():
+    """One paper account per login, shared with warrior_bot, holding ~$32k.
+    Capped at $1,100 it produces the live account's sizes and skips."""
+    for price in (0.475, 0.75, 1.40, 2.95):
+        for tier in ("normal", "lotto", "super_lotto"):
+            assert _size(32_310.0, price, tier) == _size(1_100.0, price, tier), (price, tier)
+
+
+def test_the_sizing_equity_cap_only_ever_lowers_equity():
+    assert sizing_equity(32_310.0, 1_100.0) == 1_100.0
+    assert sizing_equity(900.0, 1_100.0) == 900.0  # a smaller real balance wins
+    assert sizing_equity(32_310.0, None) == 32_310.0
+
+
+def test_the_budget_reports_both_the_real_and_the_sizing_equity():
+    budget = trade_budget(32_310.0, **SMALL)
+
+    assert budget.real_equity == 32_310.0
+    assert budget.sizing_equity == 1_100.0
+
+
+def test_the_ceiling_binds_the_small_account_budget_too():
+    budget = trade_budget(1_100.0, **{**SMALL, "ceiling_usd": 200.0})
+
+    assert budget.cap_usd == 200.0
+
+
+def test_affordability_is_exact_at_the_boundary():
+    assert affords_one_contract(300.0, 3.00)
+    assert not affords_one_contract(299.99, 3.00)
+    assert affords_one_contract(75.0, 0.75)
+
+
+def test_the_sizing_note_names_the_small_account_basis_and_the_cap():
+    budget = trade_budget(32_310.0, "lotto", **SMALL)
+    note = sizing_note(
+        equity=32_310.0, unit_pct=3.0, tier="lotto", cap_usd=budget.cap_usd,
+        basis=budget.basis, small_account_budget_usd=300.0, sized_as=budget.sizing_equity,
+    )
+
+    assert "$300 small-account budget" in note
+    assert "lotto" in note
+    assert "$150 of $32,310 equity" in note
+    assert "sized as $1,100" in note
+
+
+def test_the_sizing_note_omits_sized_as_when_nothing_was_capped():
+    note = sizing_note(
+        equity=1_100.0, unit_pct=3.0, tier="normal", cap_usd=300.0,
+        basis="small_account", small_account_budget_usd=300.0, sized_as=1_100.0,
+    )
+
+    assert "sized as" not in note

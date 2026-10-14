@@ -17,6 +17,7 @@ of the contract rounding, and it is the ceiling that bounds the loss.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Literal
 
 # The advisor's three sizing tiers. A "lotto" is a long shot taken small on
@@ -80,6 +81,98 @@ def unit_cap(
     return cap
 
 
+# How a trade's budget was arrived at.
+#   "unit"          -- a percent of equity, the guide's "1 unit = 2-5%"
+#   "small_account" -- a fixed dollar budget, because on a small account a
+#                      percent of equity cannot buy a single contract
+Basis = Literal["unit", "small_account"]
+
+
+@dataclass(frozen=True)
+class Budget:
+    """What one trade may spend, and why."""
+
+    cap_usd: float          # after the tier and the ceiling
+    basis: Basis
+    sizing_equity: float    # the equity the budget was computed from
+    real_equity: float      # what the account actually reports
+
+
+def sizing_equity(equity: float, max_sizing_equity: float | None = None) -> float:
+    """The equity sizing works from: the real figure, capped.
+
+    The cap exists for the shared paper account. IBKR allows one paper account
+    per login, so paper testing runs on a balance far larger than the live
+    options account. Sizing off the smaller of the two makes paper produce the
+    contract counts and skips the live account will. On the live account the
+    real balance is already the smaller one, so the cap changes nothing.
+    """
+    if max_sizing_equity is None:
+        return equity
+    return min(equity, max_sizing_equity)
+
+
+def trade_budget(
+    equity: float,
+    tier: str = "normal",
+    *,
+    unit_pct: float,
+    small_account_below: float,
+    small_account_budget_usd: float,
+    lotto_multiplier: float = 0.5,
+    super_lotto_multiplier: float = 0.25,
+    ceiling_usd: float | None = None,
+    max_sizing_equity: float | None = None,
+) -> Budget:
+    """The dollar budget for one trade, choosing the sizing basis.
+
+    Below `small_account_below` a percent of equity cannot buy a contract --
+    3% of $1,100 is $33, and the cheapest alerts cost ~$50 a contract -- so a
+    fixed `small_account_budget_usd` is used instead. At or above it, the
+    guide's percent-of-equity unit. The tier multiplier applies either way,
+    and `ceiling_usd` caps the result.
+    """
+    if equity <= 0:
+        raise ValueError(f"equity must be positive, got {equity}")
+    if small_account_budget_usd <= 0:
+        raise ValueError(f"small_account_budget_usd must be positive, got {small_account_budget_usd}")
+
+    sized = sizing_equity(equity, max_sizing_equity)
+    multiplier = tier_multiplier(
+        tier, lotto=lotto_multiplier, super_lotto=super_lotto_multiplier
+    )
+
+    if sized < small_account_below:
+        cap = small_account_budget_usd * multiplier
+        if ceiling_usd is not None:
+            if ceiling_usd <= 0:
+                raise ValueError(f"ceiling_usd must be positive, got {ceiling_usd}")
+            cap = min(cap, ceiling_usd)
+        return Budget(cap_usd=cap, basis="small_account", sizing_equity=sized, real_equity=equity)
+
+    cap = unit_cap(
+        sized,
+        unit_pct,
+        tier,
+        lotto_multiplier=lotto_multiplier,
+        super_lotto_multiplier=super_lotto_multiplier,
+        ceiling_usd=ceiling_usd,
+    )
+    return Budget(cap_usd=cap, basis="unit", sizing_equity=sized, real_equity=equity)
+
+
+def affords_one_contract(cap_usd: float, price: float) -> bool:
+    """Whether the budget covers a single contract at `price`.
+
+    The question compute_contracts deliberately does not ask: it floors to one
+    contract so a slightly-over-budget cheap contract still trades. On a small
+    account that floor is not "slightly" -- a super lotto's $75 budget floored
+    up to a $295 contract is four times the intended risk -- so the pipeline
+    asks this first and skips when the answer is no.
+    """
+    return cap_usd + 1e-9 >= price * 100
+
+
 def sizing_note(
     *,
     equity: float,
@@ -87,20 +180,33 @@ def sizing_note(
     tier: str,
     cap_usd: float,
     equity_is_assumed: bool = False,
+    basis: Basis = "unit",
+    small_account_budget_usd: float | None = None,
+    sized_as: float | None = None,
 ) -> str:
     """One line saying where a size came from, for the entry card.
 
     `equity_is_assumed` is set in dry run, which has no broker to ask. A size
     derived from an assumed balance has to say so -- reported bare it reads as
     a real position sizing off a real account.
+
+    `sized_as` is the capped sizing equity, shown when it differs from the
+    real balance -- on the shared paper account, a size reported against a
+    $32,000 balance without saying it was sized as $1,100 would look wrong.
     """
-    parts = [f"{unit_pct:g}% unit"]
+    if basis == "small_account" and small_account_budget_usd is not None:
+        parts = [f"${small_account_budget_usd:,.0f} small-account budget"]
+    else:
+        parts = [f"{unit_pct:g}% unit"]
     label = TIER_LABELS.get(tier, tier)
     if label:
         multiplier = tier_multiplier(tier)
         parts.append(f"{label} \u00d7{multiplier:g}")
     source = "assumed equity" if equity_is_assumed else "equity"
-    parts.append(f"${cap_usd:,.0f} of ${equity:,.0f} {source}")
+    line = f"${cap_usd:,.0f} of ${equity:,.0f} {source}"
+    if sized_as is not None and sized_as < equity:
+        line += f", sized as ${sized_as:,.0f}"
+    parts.append(line)
     return "Our size: " + " \u00b7 ".join(parts)
 
 
