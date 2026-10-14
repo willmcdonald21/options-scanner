@@ -393,6 +393,7 @@ class PositionManager:
         # advisor's own trim cards carry theirs.
         stop_updates = on_trim_fill(state, action.level_pct, self.rules)
         stop_note = ""
+        stop_cards: list[Notification] = []
         for follow_up in stop_updates:
             previous = state.stop_price
             apply_action(state, follow_up)
@@ -402,7 +403,7 @@ class PositionManager:
                 if follow_up.reason == "breakeven"
                 else f"Stop now {follow_up.price:.2f} ({follow_up.reason})."
             )
-            tick.add(
+            stop_cards.append(
                 stop_moved(
                     option=state.option,
                     old=previous,
@@ -413,6 +414,9 @@ class PositionManager:
                 )
             )
 
+        # The trim card goes first and the stop cards after it: the stop moved
+        # *because* the trim filled, and posting them the other way round
+        # announced a break-even stop before the trim that earned it.
         tick.add(
             trim_executed(
                 option=state.option,
@@ -427,6 +431,8 @@ class PositionManager:
                 jump_url=managed.jump_url,
             )
         )
+        for card in stop_cards:
+            tick.add(card)
 
     async def _do_stop_out(self, managed: Managed, action: StopOut, tick: Tick) -> None:
         state = managed.state
