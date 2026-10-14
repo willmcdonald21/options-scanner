@@ -116,15 +116,22 @@ async def _quote_check(ib, Option, Stock, errors: list) -> None:
     expiry and strike come from IBKR's own chain so this never guesses at a
     contract that does not exist.
     """
-    ib.reqMarketDataType(1)
+    # Frozen (2) rather than live (1): IBKR still streams live data during
+    # market hours, and after the close it returns the last quote recorded at
+    # the close instead of nothing. Frozen data needs the same subscription as
+    # live, so an after-hours bid still proves the OPRA entitlement -- which
+    # means this check gives a real answer at 7pm, not just during RTH.
+    ib.reqMarketDataType(2)
 
     spy = Stock("SPY", "SMART", "USD")
-    qualified = await ib.qualifyContractsAsync(spy)
+    # qualifyContractsAsync returns [None] for an unknown contract, not [].
+    qualified = [c for c in await ib.qualifyContractsAsync(spy) if c]
     if not qualified:
         emit("quote_check", "failed")
         emit("quote_check_detail", "could not qualify SPY")
         return
 
+    # A snapshot cancels itself; cancelling it again only produces error 300.
     ticker = ib.reqMktData(qualified[0], "", True, False)
     for _ in range(40):
         await asyncio.sleep(0.1)
@@ -133,12 +140,17 @@ async def _quote_check(ib, Option, Stock, errors: list) -> None:
     underlying = _clean(ticker.last) or _clean(ticker.close)
     emit("spy_price", underlying if underlying else "none")
     emit("stock_data", "yes" if underlying else "no")
-    with contextlib.suppress(Exception):
-        ib.cancelMktData(qualified[0])
 
     chains = await ib.reqSecDefOptParamsAsync("SPY", "", "STK", qualified[0].conId)
-    chain = next((c for c in chains if c.exchange == "SMART"), None)
-    if chain is None or not chain.expirations:
+    # SPY has more than one SMART chain: the real one (trading class SPY,
+    # hundreds of strikes) and adjusted classes like 2SPY with a couple of
+    # strikes. Taking whichever came first built a contract that does not
+    # exist. Prefer the class named for the symbol, else the biggest chain.
+    smart = [c for c in chains if c.exchange == "SMART" and c.expirations]
+    chain = next((c for c in smart if c.tradingClass == "SPY"), None) or max(
+        smart, key=lambda c: len(c.strikes), default=None
+    )
+    if chain is None:
         emit("quote_check", "failed")
         emit("quote_check_detail", "no SMART option chain for SPY")
         return
@@ -153,34 +165,48 @@ async def _quote_check(ib, Option, Stock, errors: list) -> None:
         expiries = sorted(chain.expirations)[:1]
 
     strikes = sorted(chain.strikes)
-    target = underlying or (strikes[len(strikes) // 2] if strikes else 0)
-    strike = min(strikes, key=lambda s: abs(s - target)) if strikes else 0
-    if not strike:
+    if not strikes:
         emit("quote_check", "failed")
         emit("quote_check_detail", "no strikes in the SPY chain")
         return
+    target = underlying or strikes[len(strikes) // 2]
 
+    # chain.strikes is the union across every expiry, so the nearest one may
+    # not be listed for this particular expiry. Try the closest few.
     expiry = expiries[0]
-    emit("quote_contract", f"SPY {expiry} {strike:g}C")
-
-    contract = Option("SPY", expiry, strike, "C", "SMART", multiplier="100", currency="USD")
-    qualified_opt = await ib.qualifyContractsAsync(contract)
-    if not qualified_opt:
+    option = None
+    for strike in sorted(strikes, key=lambda s: abs(s - target))[:8]:
+        candidate = Option(
+            "SPY", expiry, strike, "C", "SMART",
+            multiplier="100", currency="USD", tradingClass=chain.tradingClass,
+        )
+        found = [c for c in await ib.qualifyContractsAsync(candidate) if c]
+        if found:
+            option = found[0]
+            break
+    if option is None:
         emit("quote_check", "failed")
-        emit("quote_check_detail", "could not qualify the SPY option")
+        emit("quote_check_detail", f"no SPY {expiry} call near {target:g} qualified")
         return
+    emit("quote_contract", f"SPY {expiry} {option.strike:g}C")
 
-    opt_ticker = ib.reqMktData(qualified_opt[0], "", False, False)
+    opt_ticker = ib.reqMktData(option, "", False, False)
     for _ in range(60):
         await asyncio.sleep(0.1)
         if _clean(opt_ticker.bid) and _clean(opt_ticker.ask):
             break
     bid, ask = _clean(opt_ticker.bid), _clean(opt_ticker.ask)
     with contextlib.suppress(Exception):
-        ib.cancelMktData(qualified_opt[0])
+        ib.cancelMktData(option)
 
     emit("option_bid", bid if bid else "none")
     emit("option_ask", ask if ask else "none")
+    # 1 = live, 2 = frozen at the close. Either proves the entitlement; only
+    # live proves quotes are streaming, which the bot needs during the session.
+    source = {1: "live", 2: "frozen", 3: "delayed", 4: "delayed-frozen"}.get(
+        getattr(opt_ticker, "marketDataType", 0), "unknown"
+    )
+    emit("quote_source", source)
     # The bid is what the bot actually reads: the trim ladder and the synthetic
     # stop both trigger off it, so a quote with no bid is unusable regardless of
     # what else arrives.
