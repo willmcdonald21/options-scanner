@@ -282,3 +282,14 @@ def test_the_new_sizing_limits_are_off_unless_configured():
 
     assert risk.max_sizing_equity is None
     assert risk.max_contract_price is None
+
+
+def test_the_summary_names_the_budget_that_actually_sizes(monkeypatch):
+    """On the ~$1,100 account the $300 budget sizes every trade. A startup
+    card saying only "3% of equity" read as a $33 trade."""
+    env(monkeypatch)
+    line = load_settings(load_env=False).summary_line()
+
+    assert "$300 below $5,000 equity" in line
+    assert "sized as at most $1,100" in line
+    assert "contracts <= $3.00" in line

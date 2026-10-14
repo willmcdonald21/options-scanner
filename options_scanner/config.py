@@ -335,14 +335,31 @@ class Settings(BaseModel):
             data["discord"]["updates_webhook_url"] = redact(self.discord.updates_webhook_url)
         return data
 
+    def _sizing_summary(self) -> str:
+        """How a trade is sized, in words. Includes the small-account budget
+        when it applies: "3% of equity" alone read as a $33 trade on the
+        live options account, where the fixed budget is what actually sizes."""
+        risk = self.risk
+        unit = f"{risk.unit_pct_of_account:g}% of equity"
+        if risk.small_account_below > 0:
+            unit = (
+                f"${risk.small_account_budget_usd:,.0f} below ${risk.small_account_below:,.0f} "
+                f"equity, else {unit}"
+            )
+        extras = [f"cap ${risk.max_usd_per_trade:,.0f}"]
+        if risk.max_sizing_equity is not None:
+            extras.append(f"sized as at most ${risk.max_sizing_equity:,.0f}")
+        if risk.max_contract_price is not None:
+            extras.append(f"contracts <= ${risk.max_contract_price:.2f}")
+        return f"{unit} ({', '.join(extras)})"
+
     def summary_line(self) -> str:
         trims = "/".join(f"+{level}%:{pct:.0f}%" for level, pct in self.trim.schedule if pct > 0)
         trail_mult = self.trail.schedule[0][1] if self.trail.schedule else 0.0
         return (
             f"mode={self.mode.value} broker={self.broker.kind.value} trims={trims} of original "
             f"trail=arm@+{self.trail.arm_at_pct}%/{(1 - trail_mult) * 100:.0f}% below peak "
-            f"size={self.risk.unit_pct_of_account:g}% of equity "
-            f"(cap ${self.risk.max_usd_per_trade:,.0f}, max {self.risk.max_contracts_per_trade}) "
+            f"size={self._sizing_summary()} "
             f"cutoff={self.market.entry_cutoff} ET"
         )
 
