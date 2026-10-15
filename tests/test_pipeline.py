@@ -698,3 +698,93 @@ async def test_a_lotto_that_can_afford_a_contract_still_trades(storage):
 
     values = {name: value for name, value, _ in find(result, "PARSED").fields}
     assert values["Our size"].startswith("3 contracts")
+
+
+
+# --- the one-line format --------------------------------------------------
+#
+# conftest's trading day is 2026-10-06, and FakeBroker quotes 0.47 / 0.48, so
+# "SPX 7815P 0.475" is today's SPX 7815 put at the card's own price.
+
+SIMPLE = "SPX 7815P 0.475"
+
+
+async def test_a_one_line_alert_is_parsed_sized_and_ordered(storage):
+    broker = FakeBroker()
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text=SIMPLE)
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders and broker.orders[0][0] == SPX_OCC
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert values["Advisor size"] == "not given"
+
+
+async def test_a_one_line_alert_priced_far_above_the_market_is_skipped(storage):
+    """Alert says 0.475; the contract asks 0.31, 35% below. A typo, or not
+    the contract the analyst meant -- skip rather than buy it cheaply."""
+    broker = FakeBroker(bid=0.30, ask=0.31)
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text=SIMPLE)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    assert "0.31" in find(result, "skipped").description
+
+
+async def test_a_one_line_alert_within_the_band_still_trades(storage):
+    """0.40 is 16% below 0.475: inside the 25% band."""
+    broker = FakeBroker(bid=0.39, ask=0.40)
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text=SIMPLE)
+
+    assert result.final_reaction == REACTION_PLACED
+
+
+async def test_a_one_line_alert_without_a_quote_is_skipped(storage):
+    """No market price means nothing to check the alert against, and this
+    format has no checksum of its own."""
+    broker = FakeBroker(quote_raises=True)
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text=SIMPLE)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+
+
+async def test_the_price_check_does_not_apply_to_full_cards(storage):
+    """Cards carry trim targets, which already prove the numbers were read
+    right. The new check is scoped to the format that lacks them."""
+    broker = FakeBroker(bid=0.30, ask=0.31)
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline)  # SPEC_ALERT, the full card
+
+    assert result.final_reaction == REACTION_PLACED
+
+
+async def test_a_one_line_alert_chasing_above_the_cap_is_still_skipped(storage):
+    """Today's real case: alert 1.99, ask 2.22, over the +10% walk cap."""
+    broker = FakeBroker(bid=0.55, ask=0.56)  # 0.475 * 1.10 = 0.5225
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text=SIMPLE)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+
+
+async def test_a_message_that_is_neither_format_is_still_unreadable(pipeline):
+    result = await paste(pipeline, text="QQQ 718P 1.99 lotto")
+
+    assert result.final_reaction == REACTION_REJECTED

@@ -102,6 +102,11 @@ class EntryAlert:
     is_zero_dte: bool
     tier: Tier = "normal"
 
+    # "card" is the advisor's full BUY card, whose trim targets act as a parse
+    # checksum. "simple" is a one-line `QQQ 718P 1.99`, which has no checksum,
+    # so the pipeline checks its price against the live market instead.
+    source: Literal["card", "simple"] = "card"
+
 
 @dataclass(frozen=True)
 class RejectedAlert:

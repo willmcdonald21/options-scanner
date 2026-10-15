@@ -232,7 +232,7 @@ def alert_parsed(
         jump_url=jump_url,
     )
     note.add("Advisor entry", price(entry_price))
-    note.add("Advisor size", contracts(advisor_contracts))
+    note.add("Advisor size", contracts(advisor_contracts) if advisor_contracts > 0 else "not given")
     note.add("Our size", f"{contracts(our_contracts)} · {money(cost)}")
     if levels:
         note.add("Trim Targets", ladder_block(levels), inline=False)

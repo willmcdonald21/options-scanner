@@ -224,6 +224,86 @@ def _check_trim_targets(
     return None
 
 
+# One-line alerts from the second analyst: `QQQ 718P 1.99`.
+#
+#   ticker   strike+right   price per share
+#
+# An optional `MM/DD` or `MM/DD/YY(YY)` before the strike names the expiry;
+# without one the alert means today's (0DTE) contract -- checked against the
+# live chain on 2026-10-15, when QQQ 718P at 1.99 matched only the same-day
+# put. `$` and `@` are tolerated, case is not significant. The WHOLE message
+# must match: anything extra means it is not one of these, and the bot never
+# guesses at a partial match.
+_SIMPLE_ALERT_RE = re.compile(
+    r"^\s*\$?(?P<ticker>[A-Za-z]{1,6})"
+    r"(?:\s+(?P<month>\d{1,2})/(?P<day>\d{1,2})(?:/(?P<year>\d{2}|\d{4}))?)?"
+    r"\s+(?P<strike>\d+(?:\.\d+)?)\s*(?P<right>[CcPp])"
+    r"\s+@?\s*\$?(?P<price>\d*\.?\d+)\s*$"
+)
+
+
+def parse_simple_alert(text: str, *, message_id: int, today: date) -> EntryAlert | RejectedAlert | None:
+    """Parse a one-line `TICKER STRIKE{C|P} PRICE` alert. Never raises.
+
+    Returns None when the text is not shaped like one, so the caller can fall
+    back to the card parser. Returns a RejectedAlert when it IS shaped like one
+    but cannot be traded (a zero price, an impossible or past date), so the
+    rejection is reported rather than the paste being called unreadable.
+    """
+    if "\n" in (text or "").strip():
+        return None
+    match = _SIMPLE_ALERT_RE.match(text or "")
+    if not match:
+        return None
+
+    ticker = match["ticker"].upper()
+    right = match["right"].upper()
+    raw_title = " ".join((text or "").split())
+
+    def reject(reason: RejectReason, detail: str) -> RejectedAlert:
+        return RejectedAlert(message_id, reason, detail, raw_title)
+
+    strike = float(match["strike"])
+    price = float(match["price"])
+    if strike <= 0 or price <= 0:
+        return reject(RejectReason.NON_POSITIVE_PRICE, f"strike {strike:g} and price {price:g} must both be positive")
+
+    if match["month"]:
+        year = today.year
+        if match["year"]:
+            year = int(match["year"])
+            if year < 100:
+                year += 2000
+        try:
+            expiry = date(year, int(match["month"]), int(match["day"]))
+        except ValueError:
+            return reject(
+                RejectReason.UNPARSABLE_CONTRACT,
+                f"{match['month']}/{match['day']} is not a real date",
+            )
+        if expiry < today:
+            return reject(
+                RejectReason.EXPIRY_IN_PAST,
+                f"expiry {expiry.isoformat()} is before today ({today.isoformat()}); "
+                "add the year if you meant next year",
+            )
+    else:
+        expiry = today
+
+    return EntryAlert(
+        message_id=message_id,
+        option=OptionKey(ticker, expiry, strike, right),
+        entry_price=price,
+        advisor_contracts=0,      # this format does not say
+        advisor_cost=0.0,
+        trim_targets=(),          # nor does it carry a ladder; ours is computed from the fill
+        raw_title=raw_title,
+        is_zero_dte=expiry == today,
+        tier="normal",
+        source="simple",
+    )
+
+
 def detect_tier(card: ParsedCard) -> Tier:
     """The advisor's sizing tier, read off the card.
 

@@ -21,6 +21,7 @@ from options_scanner.parser import (
     ParsedCard,
     detect_tier,
     parse_card,
+    parse_simple_alert,
 )
 from options_scanner.text_import import parse_cards
 
@@ -462,3 +463,109 @@ def test_a_tier_said_only_in_chat_is_not_detectable():
     watch the channel on lotto days.
     """
     assert parse_cards("Super lotto size less") == []
+
+
+
+# --- the one-line format: `QQQ 718P 1.99` --------------------------------
+
+OCT_15 = date(2026, 10, 15)
+
+
+def _simple(text, today=OCT_15):
+    return parse_simple_alert(text, message_id=42, today=today)
+
+
+def test_a_one_line_alert_means_todays_contract():
+    """Checked against the live chain on 2026-10-15: QQQ 718P at 1.99 matched
+    only the same-day put (tomorrow's was 3.80)."""
+    alert = _simple("QQQ 718P 1.99")
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.option == OptionKey("QQQ", OCT_15, 718.0, "P")
+    assert alert.entry_price == 1.99
+    assert alert.is_zero_dte
+    assert alert.source == "simple"
+    assert alert.tier == "normal"
+    assert alert.trim_targets == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["qqq 718p 1.99", "$QQQ 718P $1.99", "QQQ 718P @ 1.99", "  QQQ   718P   1.99  ", "QQQ 718 P 1.99"],
+)
+def test_harmless_variations_read_the_same(text):
+    assert _simple(text).option == OptionKey("QQQ", OCT_15, 718.0, "P")
+
+
+def test_a_half_strike_and_a_bare_decimal_price():
+    alert = _simple("SPY 367.5C .85")
+
+    assert alert.option.strike == 367.5
+    assert alert.option.right == "C"
+    assert alert.entry_price == 0.85
+
+
+def test_spx_resolves_to_the_weekly_trading_class():
+    alert = _simple("SPX 5800C 2.40")
+
+    assert alert.option.occ_symbol.startswith("SPXW")
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("QQQ 10/16 718P 1.99", date(2026, 10, 16)),
+        ("QQQ 1/15/27 718P 1.99", date(2027, 1, 15)),
+        ("QQQ 1/15/2027 718P 1.99", date(2027, 1, 15)),
+    ],
+)
+def test_a_written_date_overrides_today(text, expected):
+    alert = _simple(text)
+
+    assert alert.option.expiry == expected
+    assert not alert.is_zero_dte
+
+
+def test_a_past_date_is_rejected_not_rolled_to_next_year():
+    """Rolling 10/14 forward to 2027 would buy a contract nobody asked for."""
+    result = _simple("QQQ 10/14 718P 1.99")
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.EXPIRY_IN_PAST
+
+
+def test_an_impossible_date_is_rejected():
+    result = _simple("QQQ 13/40 718P 1.99")
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.UNPARSABLE_CONTRACT
+
+
+def test_a_zero_price_is_rejected():
+    result = _simple("QQQ 718P 0")
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.NON_POSITIVE_PRICE
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "QQQ 718P 1.99 lotto",       # anything extra: not this format
+        "QQQ 718P",                  # no price
+        "718P 1.99",                 # no ticker
+        "QQQ 718X 1.99",             # not a call or a put
+        "QQQ 718P\n1.99",            # split across lines
+        "BUY — QQQ 730C · 0DTE",     # a card's title
+        "anyone filled on QQQ?",
+        "",
+    ],
+)
+def test_anything_else_is_not_a_one_line_alert(text):
+    """None, not a rejection: the paste then goes to the card parser, and the
+    bot never guesses at a partial match."""
+    assert _simple(text) is None
+
+
+def test_a_full_card_is_never_taken_for_a_one_line_alert():
+    assert _simple(SPEC_ALERT) is None

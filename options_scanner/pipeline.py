@@ -52,7 +52,7 @@ from options_scanner.notifier import (
     unreadable_paste,
     would_place_entry,
 )
-from options_scanner.parser import parse_card
+from options_scanner.parser import parse_card, parse_simple_alert
 from options_scanner.risk import RiskGate
 from options_scanner.rules import level_price
 from options_scanner.sizing import (
@@ -149,8 +149,47 @@ class AlertPipeline:
             )
             return result
 
-        cards = parse_cards(text, reference_date=moment)
         self.storage.bump_day(trading_day, alerts_received=1)
+
+        # The second analyst's one-line format: `QQQ 718P 1.99`. Tried first
+        # because it is strict -- the whole message must match -- so it cannot
+        # swallow a card, and a card's title never matches it.
+        simple = parse_simple_alert(text, message_id=message_id, today=trading_day)
+        if simple is not None:
+            try:
+                await self._route(
+                    parsed=simple,
+                    card_id=message_id,
+                    channel_id=channel_id,
+                    author_id=author_id,
+                    raw_text=text,
+                    jump_url=jump_url,
+                    moment=moment,
+                    trading_day=trading_day,
+                    result=result,
+                )
+            except Exception as exc:
+                logger.exception("failed handling one-line alert %s", message_id)
+                self.storage.record_alert(
+                    message_id=message_id,
+                    channel_id=channel_id,
+                    author_id=author_id,
+                    raw_text=text,
+                    jump_url=jump_url,
+                    status=STATUS_REJECTED,
+                    reason=f"internal error: {exc}",
+                )
+                result.add(
+                    REACTION_REJECTED,
+                    error_note(
+                        title="Error handling alert",
+                        detail=f"{type(exc).__name__}: {exc}\nNothing was traded.",
+                        jump_url=jump_url,
+                    ),
+                )
+            return result
+
+        cards = parse_cards(text, reference_date=moment)
 
         if not cards:
             self.storage.record_alert(
@@ -221,7 +260,32 @@ class AlertPipeline:
         trading_day: date,
         result: Handled,
     ) -> None:
-        parsed = parse_card(card, today=trading_day)
+        await self._route(
+            parsed=parse_card(card, today=trading_day),
+            card_id=card_id,
+            channel_id=channel_id,
+            author_id=author_id,
+            raw_text=raw_text,
+            jump_url=jump_url,
+            moment=moment,
+            trading_day=trading_day,
+            result=result,
+        )
+
+    async def _route(
+        self,
+        *,
+        parsed,
+        card_id: int,
+        channel_id: int,
+        author_id: int,
+        raw_text: str,
+        jump_url: str | None,
+        moment: datetime,
+        trading_day: date,
+        result: Handled,
+    ) -> None:
+        """Act on one parse result, whichever format it came from."""
 
         def record(status: str, reason: str | None = None, alert: EntryAlert | None = None) -> None:
             self.storage.record_alert(
@@ -361,6 +425,38 @@ class AlertPipeline:
             # The limit is on what we could PAY, not only on the quoted entry:
             # a $2.95 alert's slippage walk would otherwise reach $3.25.
             cap_price = min(cap_price, max_price)
+
+        # A one-line alert has no trim-target checksum, so the live market is
+        # the only check that we have the contract the analyst meant. Dry run
+        # has no broker and sends nothing, so there is nothing to check there.
+        if alert.source == "simple" and self.broker is not None:
+            floor_pct = settings.entry.max_ask_below_alert_pct
+            floor = reference_price * (1 - floor_pct / 100.0)
+            ask = quote.ask if quote is not None else None
+            mismatch = None
+            if not ask:
+                mismatch = (
+                    "no live ask for this contract, so the alert price cannot be checked "
+                    "against the market. Nothing was ordered."
+                )
+            elif ask < floor:
+                mismatch = (
+                    f"the alert says {reference_price:.2f} but the contract asks {ask:.2f}, "
+                    f"more than {floor_pct:.0f}% below. That is usually a typo or a different "
+                    "expiry than the analyst meant (a one-line alert means today's unless it "
+                    "names a date). Nothing was ordered."
+                )
+            if mismatch:
+                record(STATUS_SKIPPED, f"price_mismatch: {mismatch}")
+                self.storage.bump_day(trading_day, alerts_skipped=1)
+                result.add(
+                    REACTION_SKIPPED,
+                    alert_skipped(
+                        reason="price_mismatch", detail=mismatch, jump_url=jump_url,
+                        option=alert.option, today=trading_day,
+                    ),
+                )
+                return
 
         if quote is not None and quote.ask and settings.entry.skip_if_ask_above_cap:
             if quote.ask > cap_price:

@@ -91,6 +91,13 @@ class EntrySettings(BaseModel):
     # re-entry later in the session.
     duplicate_window_seconds: float = Field(default=900.0, gt=0)
 
+    # One-line alerts (`QQQ 718P 1.99`) carry no trim targets, so nothing
+    # cross-checks that the numbers were read right or that the contract is
+    # really today's. Skip one when the live ask is more than this far BELOW
+    # the alert price: that is a typo, or a different contract than the
+    # analyst meant. Too far ABOVE is already skipped as not chasing.
+    max_ask_below_alert_pct: float = Field(default=25.0, gt=0, lt=100)
+
 
 class TrimSettings(BaseModel):
     # (level percent, percent of the ORIGINAL position to sell). The guide's

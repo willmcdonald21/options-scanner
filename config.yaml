@@ -16,6 +16,10 @@ entry:
   limit_walk_steps: 3
   skip_if_ask_above_cap: true   # the move went without us; don't chase
   duplicate_window_seconds: 900  # same contract+entry inside this = a re-paste
+  # One-line alerts (QQQ 718P 1.99) have no trim-target checksum. Skip one
+  # when the live ask is this far BELOW the alert price: a typo, or not the
+  # contract the analyst meant.
+  max_ask_below_alert_pct: 25
 
 trim:
   # The advisor's ladder: sell half at +25%, another quarter at +50%, leave a
