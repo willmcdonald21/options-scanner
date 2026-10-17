@@ -8,7 +8,7 @@ from datetime import date, datetime
 
 from conftest import SPX_OCC, TRADING_DAY, make_settings, paste
 
-from options_scanner.broker.base import Quote
+from options_scanner.broker.base import BrokerError, Quote
 from options_scanner.broker.paper import PaperBroker
 from options_scanner.contracts import build_spec
 from options_scanner.models import OptionKey
@@ -510,3 +510,180 @@ async def test_the_trim_card_comes_before_the_stop_it_caused(storage):
     trim = next(i for i, t in enumerate(order) if t.startswith("TRIM +25%"))
     stop = next(i for i, t in enumerate(order) if t.startswith("STOP"))
     assert trim < stop
+
+
+# --- broker outages ---------------------------------------------------------
+#
+# 2026-10-16: Gateway logged off at 23:37 and the bot posted a CRITICAL
+# "Broker disconnected" on every 1.5s poll -- 2,379 pings in 78 minutes -- and
+# never tried to reconnect.
+
+from options_scanner.position_manager import (  # noqa: E402
+    OUTAGE_REMINDER_SECONDS,
+    RECONNECT_FIRST_SECONDS,
+)
+from options_scanner.notifier import Level  # noqa: E402
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1_000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _outage(storage, *, reconnects: bool):
+    """A manager whose broker has just dropped. `reconnects` decides whether
+    connect() brings it back."""
+    feed, broker, manager, pipeline, risk = build(storage)
+    clock = Clock()
+    manager._monotonic = clock
+    calls = []
+
+    async def connect():
+        calls.append(clock.now)
+        if not reconnects:
+            raise BrokerError("connection refused")
+        broker._connected = True
+
+    broker.connect = connect
+    return feed, broker, manager, pipeline, clock, calls
+
+
+async def _drop(broker):
+    broker._connected = False
+
+
+async def test_an_outage_is_announced_once_not_every_poll(storage):
+    _, broker, manager, _, clock, _ = _outage(storage, reconnects=False)
+    await _drop(broker)
+
+    first = await manager.poll_once()
+    later = []
+    for _ in range(200):  # five minutes of 1.5s polls
+        clock.now += 1.5
+        later += await manager.poll_once()
+
+    assert titles(first) == ["Broker disconnected"]
+    assert not any(n.title == "Broker disconnected" for n in later)
+
+
+async def test_with_nothing_open_an_outage_is_a_warning_not_a_ping(storage):
+    _, broker, manager, _, _, _ = _outage(storage, reconnects=False)
+    await _drop(broker)
+
+    (note,) = await manager.poll_once()
+
+    assert note.level is Level.WARNING
+    assert not note.mentions_owner
+    assert "nothing is at risk" in note.description
+
+
+async def test_with_a_position_open_an_outage_is_critical(storage):
+    feed, broker, manager, pipeline, _, _ = _outage(storage, reconnects=False)
+    await enter(pipeline, feed)
+    await _drop(broker)
+
+    (note,) = await manager.poll_once()
+
+    assert note.level is Level.CRITICAL
+    assert note.mentions_owner
+    assert "1 open position" in note.description
+
+
+async def test_open_positions_in_storage_count_even_before_reconcile(storage):
+    """A restart with Gateway down: nothing is tracked in memory yet, but the
+    position is open and its stop is blind."""
+    feed, broker, manager, pipeline, _, _ = _outage(storage, reconnects=False)
+    await enter(pipeline, feed)
+    manager.managed.clear()  # as if freshly restarted, reconcile not yet run
+    await _drop(broker)
+
+    (note,) = await manager.poll_once()
+
+    assert note.level is Level.CRITICAL
+
+
+async def test_a_long_outage_with_positions_open_is_restated_every_15_minutes(storage):
+    feed, broker, manager, pipeline, clock, _ = _outage(storage, reconnects=False)
+    await enter(pipeline, feed)
+    await _drop(broker)
+    await manager.poll_once()
+
+    reminders = []
+    for _ in range(int(2 * OUTAGE_REMINDER_SECONDS / 30) + 1):  # just over 30 minutes
+        clock.now += 30
+        reminders += [n for n in await manager.poll_once() if n.title == "Broker disconnected"]
+
+    assert len(reminders) == 2
+    assert "Still not connected" in reminders[0].description
+
+
+async def test_reconnection_is_retried_with_a_growing_gap(storage):
+    _, broker, manager, _, clock, calls = _outage(storage, reconnects=False)
+    await _drop(broker)
+    await manager.poll_once()
+
+    for _ in range(int(400 / 1.5)):
+        clock.now += 1.5
+        await manager.poll_once()
+
+    gaps = [round(b - a) for a, b in zip(calls, calls[1:])]
+    assert calls[0] - 1_000.0 >= RECONNECT_FIRST_SECONDS
+    assert gaps == sorted(gaps)        # never retries faster than before
+    assert gaps[0] < gaps[-1]          # and backs off
+
+
+async def test_the_bot_reconnects_and_says_so(storage):
+    _, broker, manager, _, clock, calls = _outage(storage, reconnects=True)
+    await _drop(broker)
+    await manager.poll_once()
+
+    clock.now += RECONNECT_FIRST_SECONDS
+    notes = await manager.poll_once()
+
+    assert calls
+    assert broker.is_connected
+    assert "Broker reconnected" in titles(notes)
+
+
+async def test_after_reconnecting_open_positions_are_rechecked_and_managed(storage):
+    """It could not see the account during the outage, so it re-checks before
+    acting -- then carries on laddering as normal."""
+    feed, broker, manager, pipeline, clock, _ = _outage(storage, reconnects=True)
+    await enter(pipeline, feed)
+    await _drop(broker)
+    await manager.poll_once()
+
+    clock.now += RECONNECT_FIRST_SECONDS
+    notes = await manager.poll_once()
+    assert "Broker reconnected" in titles(notes)
+    assert any("Reconcil" in t or "reconcil" in t.lower() for t in titles(notes))
+
+    feed.set(0.62)  # +25%
+    assert has(await manager.poll_once(), "TRIM +25%")
+
+
+async def test_a_second_outage_is_announced_again(storage):
+    _, broker, manager, _, clock, _ = _outage(storage, reconnects=True)
+    await _drop(broker)
+    await manager.poll_once()
+    clock.now += RECONNECT_FIRST_SECONDS
+    await manager.poll_once()  # back
+
+    await _drop(broker)
+    clock.now += 5
+    notes = await manager.poll_once()
+
+    assert titles(notes) == ["Broker disconnected"]
+
+
+async def test_re_tracking_keeps_the_link_to_the_alert(storage):
+    feed, broker, manager, pipeline, _, _ = _outage(storage, reconnects=True)
+    await enter(pipeline, feed)
+    before = manager.managed[SPX_OCC].jump_url
+
+    await manager.reconcile()
+
+    assert before and manager.managed[SPX_OCC].jump_url == before

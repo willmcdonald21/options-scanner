@@ -81,3 +81,41 @@ def test_a_single_account_that_is_not_the_configured_one_is_refused():
 
 def test_whitespace_around_the_account_is_ignored():
     quotes(["DU111"], account="  DU111  ")._check_account()
+
+
+# --- reconnecting ---------------------------------------------------------
+
+
+class _DeadIB(FakeIB):
+    def isConnected(self):
+        return False
+
+
+async def test_a_reconnect_drops_tickers_from_the_dead_session(monkeypatch):
+    """Tickers belong to the session that created them. After Gateway drops,
+    the old ones never update again -- left cached they read as a frozen price,
+    which a synthetic stop would take as real."""
+    import ib_async
+
+    class RefusingIB(FakeIB):
+        def __init__(self):
+            super().__init__(["DU111"])
+            self.errorEvent = _Event()
+
+        async def connectAsync(self, *args, **kwargs):
+            raise ConnectionRefusedError("gateway is down")
+
+    monkeypatch.setattr(ib_async, "IB", RefusingIB)
+    q = IBKRQuotes("127.0.0.1", 4002, 12)
+    q._ib = _DeadIB(["DU111"])
+    q._tickers = {"QQQ   261015P00718000": object()}
+
+    with pytest.raises(BrokerError):
+        await q.connect()
+
+    assert q._tickers == {}
+
+
+class _Event:
+    def __iadd__(self, handler):
+        return self

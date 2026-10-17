@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -35,6 +36,8 @@ from options_scanner.models import PositionState
 from options_scanner.notifier import (
     Notification,
     broker_disconnected,
+    broker_reconnected,
+    reconciliation,
     error as error_note,
     near_close_warning,
     phantom_exit,
@@ -63,6 +66,29 @@ from options_scanner.rules import (
 from options_scanner.storage import Storage
 
 logger = logging.getLogger("options_scanner.position_manager")
+
+
+# Reconnection pacing. The first retry comes quickly, because a dropped socket
+# often comes straight back; after that the gap doubles to a ceiling, so a
+# Gateway that is down for the weekend is asked every few minutes rather than
+# hammered every poll.
+RECONNECT_FIRST_SECONDS = 10.0
+RECONNECT_MAX_SECONDS = 300.0
+
+# While positions are open and the broker is gone, the outage is restated this
+# often. Silence after one alert would be easy to miss; an alert every poll
+# (1.5s) was 2,379 pings in 78 minutes on 2026-10-16.
+OUTAGE_REMINDER_SECONDS = 900.0
+
+
+@dataclass
+class _Outage:
+    """One continuous stretch without a broker connection."""
+
+    started: float          # monotonic
+    next_attempt: float     # monotonic
+    backoff: float
+    last_alert: float       # monotonic
 
 
 @dataclass
@@ -118,10 +144,18 @@ class PositionManager:
         self.managed: dict[str, Managed] = {}
         self._near_close_warned = False
         self._running = False
+        self._outage: _Outage | None = None
+        # Injectable so a test can move time instead of waiting for it.
+        self._monotonic = time.monotonic
 
     # --- registration ------------------------------------------------------
 
     def track(self, position_id: int, state: PositionState, jump_url: str | None = None) -> Managed:
+        # Re-tracking (a reconcile after a reconnect) must not lose the link
+        # back to the alert, or every later card for the position has none.
+        existing = self.managed.get(build_spec(state.option).occ_symbol)
+        if jump_url is None and existing is not None:
+            jump_url = existing.jump_url
         managed = Managed(
             position_id=position_id,
             state=state,
@@ -222,7 +256,7 @@ class PositionManager:
         notifications: list[Notification] = []
 
         if not self.broker.is_connected:
-            notifications.append(broker_disconnected(detail="The broker session is not connected."))
+            notifications.extend(await self._while_disconnected())
             await self._post(*notifications)
             return notifications
 
@@ -236,6 +270,75 @@ class PositionManager:
         notifications.extend(await self._check_near_close())
         await self._post(*notifications)
         return notifications
+
+    # --- broker outages ------------------------------------------------------
+
+    def _open_position_count(self) -> int:
+        """Storage, not just self.managed: after a restart with Gateway down,
+        reconcile has not run yet, so nothing is tracked in memory even though
+        positions are open."""
+        try:
+            return max(len(self.managed), len(self.storage.open_positions()))
+        except Exception:
+            return len(self.managed)
+
+    async def _while_disconnected(self) -> list[Notification]:
+        """One poll's worth of outage handling: alert once, retry with backoff,
+        and announce the return.
+
+        Before this existed the bot posted a critical alert on every poll and
+        never reconnected at all -- once Gateway dropped, the bot stayed blind
+        until someone restarted it.
+        """
+        now = self._monotonic()
+        notes: list[Notification] = []
+
+        if self._outage is None:
+            self._outage = _Outage(
+                started=now,
+                next_attempt=now + RECONNECT_FIRST_SECONDS,
+                backoff=RECONNECT_FIRST_SECONDS,
+                last_alert=now,
+            )
+            logger.warning("broker disconnected; retrying in %.0fs", RECONNECT_FIRST_SECONDS)
+            notes.append(
+                broker_disconnected(
+                    detail="The broker session is not connected.",
+                    open_positions=self._open_position_count(),
+                )
+            )
+            return notes
+
+        outage = self._outage
+        if now >= outage.next_attempt:
+            try:
+                await self.broker.connect()
+            except Exception as exc:
+                logger.warning("reconnect attempt failed: %s", exc)
+            if self.broker.is_connected:
+                self._outage = None
+                logger.info("broker reconnected after %.0fs", now - outage.started)
+                notes.append(broker_reconnected(down_seconds=now - outage.started))
+                # Positions may have changed while we could not see them --
+                # a fill, an expiry, a manual close. Re-check before acting.
+                lines, mismatched = await self.reconcile()
+                if lines or mismatched:
+                    notes.append(reconciliation(lines=lines, mismatched=mismatched))
+                return notes
+            outage.backoff = min(outage.backoff * 2, RECONNECT_MAX_SECONDS)
+            outage.next_attempt = now + outage.backoff
+            logger.info("still disconnected; next attempt in %.0fs", outage.backoff)
+
+        open_count = self._open_position_count()
+        if open_count and now - outage.last_alert >= OUTAGE_REMINDER_SECONDS:
+            outage.last_alert = now
+            notes.append(
+                broker_disconnected(
+                    detail=f"Still not connected after {(now - outage.started) / 60:.0f} min.",
+                    open_positions=open_count,
+                )
+            )
+        return notes
 
     async def poll_position(self, managed: Managed) -> Tick:
         """Advance one position by one quote."""

@@ -127,7 +127,9 @@ class PaperBroker(Broker):
 
     @property
     def is_connected(self) -> bool:
-        return self._connected
+        # Its own flag alone stayed True after the IBKR quote session under it
+        # dropped, so an outage in simulated mode was never noticed.
+        return self._connected and getattr(self._quotes, "is_connected", True)
 
     # --- market data -------------------------------------------------------
 

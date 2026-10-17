@@ -71,6 +71,10 @@ class IBKRQuotes:
 
         if self._ib is not None and self._ib.isConnected():
             return
+        # A reconnect after a dropped session: the cached tickers belong to the
+        # dead connection and will never update again. Left in place they would
+        # read as a frozen price -- exactly what a synthetic stop must not see.
+        self._tickers.clear()
         self._ib = IB()
         self._ib.errorEvent += self._on_error
         try:

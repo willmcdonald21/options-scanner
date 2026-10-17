@@ -588,11 +588,36 @@ def stale_quotes(*, occ_symbol: str, seconds: float) -> Notification:
     )
 
 
-def broker_disconnected(*, detail: str) -> Notification:
+def broker_disconnected(*, detail: str, open_positions: int = 1) -> Notification:
+    """Critical -- and so a ping -- only when a position is open, because only
+    then is a stop blind. With nothing open the bot just cannot take new
+    alerts, which is worth a card but not a phone notification at midnight."""
+    if open_positions > 0:
+        return Notification(
+            title="Broker disconnected",
+            level=Level.CRITICAL,
+            description=(
+                f"{detail}\n{open_positions} open position(s) are unmanaged -- no trims, no "
+                "stops -- until this is restored. The bot is retrying the connection."
+            ),
+        )
     return Notification(
         title="Broker disconnected",
-        level=Level.CRITICAL,
-        description=f"{detail}\nOpen positions are unmanaged until this is restored.",
+        level=Level.WARNING,
+        description=(
+            f"{detail}\nNo positions are open, so nothing is at risk. New alerts cannot be "
+            "traded until it is back; the bot is retrying the connection."
+        ),
+    )
+
+
+def broker_reconnected(*, down_seconds: float) -> Notification:
+    minutes = down_seconds / 60.0
+    took = f"{minutes:.0f} min" if minutes >= 1 else f"{down_seconds:.0f}s"
+    return Notification(
+        title="Broker reconnected",
+        level=Level.SUCCESS,
+        description=f"Back after {took}. Positions are being re-checked against IBKR.",
     )
 
 

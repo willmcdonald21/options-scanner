@@ -29,7 +29,6 @@ from options_scanner.notifier import (
     REACTION_RECEIVED,
     Level,
     Notification,
-    broker_disconnected,
     end_of_day,
     flatten_requested,
     halted,
@@ -128,20 +127,26 @@ class SwiftAlertBot(discord.Client):
         # Connect before reconciling: reconciliation compares against the
         # broker, so doing it on a dead session would report every position as
         # missing and raise a false alarm on every restart.
+        connected = True
         if self.pipeline.broker is not None and not self.pipeline.broker.is_connected:
             try:
                 await self.pipeline.broker.connect()
             except Exception as exc:
-                logger.error("broker connect failed: %s", exc)
-                await self.post(broker_disconnected(detail=str(exc)))
-                return
+                # Not fatal. The position manager reports the outage once and
+                # keeps retrying; returning here used to mean it never started
+                # at all, so a bot launched while Gateway was down stayed blind
+                # even after Gateway came back.
+                logger.error("broker connect failed at startup: %s", exc)
+                connected = False
 
-        # Reconcile before the loop starts, so a position whose broker state
-        # disagrees with ours is reported before anything acts on it.
         if self.manager is not None:
-            lines, mismatched = await self.manager.reconcile()
-            if lines or mismatched:
-                await self.post(reconciliation(lines=lines, mismatched=mismatched))
+            # Reconcile before the loop starts, so a position whose broker state
+            # disagrees with ours is reported before anything acts on it. When
+            # the broker is down the manager does this itself on reconnect.
+            if connected:
+                lines, mismatched = await self.manager.reconcile()
+                if lines or mismatched:
+                    await self.post(reconciliation(lines=lines, mismatched=mismatched))
             self._manager_task = asyncio.create_task(self.manager.run())
             logger.info("position manager loop started")
 
