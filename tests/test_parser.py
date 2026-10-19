@@ -158,16 +158,67 @@ def test_rounding_inside_a_cent_is_tolerated():
         assert abs(alert.entry_price * (1 + target.pct) - target.price) <= TRIM_TARGET_TOLERANCE
 
 
-def test_a_card_with_no_ladder_is_rejected():
-    stripped = "\n".join(
+def _without_ladder(card: str, keep_heading: bool = False) -> str:
+    return "\n".join(
         line
-        for line in SPEC_ALERT.splitlines()
-        if not line.startswith("Trim Targets") and "%   $" not in line and "%  $" not in line
+        for line in card.splitlines()
+        if (keep_heading or not line.startswith("Trim Targets"))
+        and "%   $" not in line and "%  $" not in line
     )
-    result = _parse(stripped)
+
+
+def test_a_card_with_no_ladder_is_accepted_and_the_bot_assigns_its_own():
+    """The targets were only ever a checksum; the bot builds its own ladder
+    from the fill. A missing block must not block the trade."""
+    result = _parse(_without_ladder(SPEC_ALERT))
+
+    assert isinstance(result, EntryAlert)
+    assert result.trim_targets == ()
+    assert result.entry_price == 0.475
+
+
+def test_an_empty_trim_targets_heading_is_accepted():
+    """2026-10-19 13:15 ET, QQQ 721C: the card ended at a bare "Trim Targets"
+    heading with nothing under it, and the whole alert was rejected."""
+    result = _parse(_without_ladder(SPEC_ALERT, keep_heading=True))
+
+    assert isinstance(result, EntryAlert)
+    assert result.trim_targets == ()
+
+
+def test_a_ladder_that_disagrees_with_the_entry_is_still_rejected():
+    """Missing targets are fine; WRONG ones mean a number was misread."""
+    tampered = SPEC_ALERT.replace("25%   $0.594", "25%   $0.700")
+
+    result = _parse(tampered)
 
     assert isinstance(result, RejectedAlert)
-    assert result.reason is RejectReason.NO_TRIM_TARGETS
+    assert result.reason is RejectReason.TRIM_TARGET_MISMATCH
+
+
+# The real card from 2026-10-19, verbatim.
+QQQ_721C_NO_TARGETS = """BUY — QQQ 721C · 0DTE
+ Super Lotto Trade — RISKY
+Size Very Less
+Entered QQQ Oct19 '26 721 Call
+Open Live Dashboard →
+Entry
+$0.585
+Contracts
+15
+Cost
+$877
+Trim Targets"""
+
+
+def test_the_real_card_that_was_rejected_now_parses():
+    result = _parse(QQQ_721C_NO_TARGETS, today=date(2026, 10, 19))
+
+    assert isinstance(result, EntryAlert)
+    assert result.option == OptionKey("QQQ", date(2026, 10, 19), 721.0, "C")
+    assert result.entry_price == 0.585
+    assert result.tier == "super_lotto"
+    assert result.trim_targets == ()
 
 
 def test_one_bad_rung_rejects_the_whole_alert():
@@ -694,3 +745,17 @@ def test_an_average_down_can_name_a_date():
 @pytest.mark.parametrize("text", ["avg QQQ 718P", "avg", "QQQ 718P 1.50 avg lotto", "avg avg QQQ 718P 1.50"])
 def test_a_malformed_average_down_is_not_guessed_at(text):
     assert _simple(text) is None
+
+
+
+def test_an_averaging_down_card_without_a_ladder_needs_no_new_avg():
+    stripped = "\n".join(
+        line for line in AVG_DOWN_ALERT.splitlines()
+        if not line.startswith(("Trim Targets", "New Avg", "$0.215")) and "%   $" not in line
+    )
+
+    result = _parse(stripped, today=SEPT_21)
+
+    assert isinstance(result, EntryAlert)
+    assert result.average_down
+    assert result.entry_price == 0.175

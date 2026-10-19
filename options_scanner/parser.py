@@ -203,14 +203,14 @@ def _check_trim_targets(
 ) -> RejectedAlert | None:
     """Recompute each listed target off the entry and compare. A mismatch
     means a number was misread somewhere, so the whole alert is suspect --
-    not just the ladder, which the bot doesn't trade off anyway."""
-    if not targets:
-        return RejectedAlert(
-            message_id=-1,
-            reason=RejectReason.NO_TRIM_TARGETS,
-            detail="card has no 'Trim Targets' block to validate the entry price against",
-            raw_title=title,
-        )
+    not just the ladder, which the bot doesn't trade off anyway.
+
+    No targets at all is fine. The bot never trades off the card's ladder; it
+    builds its own from the fill (config trim.schedule). The targets were only
+    ever a checksum, so a card without them -- an empty "Trim Targets" block,
+    or a paste cut short -- is accepted, and the pipeline checks the price
+    against the live market instead, as it does for one-line alerts.
+    """
     for target in targets:
         expected = entry_price * (1 + target.pct)
         if abs(expected - target.price) > TRIM_TARGET_TOLERANCE:
@@ -252,13 +252,20 @@ def _parse_average_down(card: ParsedCard, title: str, today: date) -> ParseResul
     added = _ADDED_RE.search(card.description or "")
     if added is None:
         return reject(RejectReason.MISSING_FIELD, "card has no 'Added N @ $price' line")
-    if "New Avg" not in card.fields:
-        return reject(RejectReason.MISSING_FIELD, "card has no 'New Avg' field")
+
+    targets = parse_trim_targets(card.fields)
+    # The targets are measured from New Avg, so it is needed to check them --
+    # and only for that. With no targets there is nothing to check it against.
+    if targets and "New Avg" not in card.fields:
+        return reject(
+            RejectReason.MISSING_FIELD,
+            "card has trim targets but no 'New Avg' field to check them against",
+        )
 
     try:
         added_qty = int(added["qty"].replace(",", ""))
         added_price = float(added["price"].replace(",", ""))
-        new_avg = _parse_money(card.fields["New Avg"])
+        new_avg = _parse_money(card.fields["New Avg"]) if "New Avg" in card.fields else added_price
     except ValueError as exc:
         return reject(RejectReason.UNPARSABLE_NUMBER, str(exc))
 
@@ -276,7 +283,6 @@ def _parse_average_down(card: ParsedCard, title: str, today: date) -> ParseResul
             card.message_id, expiry_rejection.reason, expiry_rejection.detail, title
         )
 
-    targets = parse_trim_targets(card.fields)
     target_rejection = _check_trim_targets(new_avg, targets, title)
     if target_rejection is not None:
         return RejectedAlert(
