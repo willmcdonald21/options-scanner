@@ -653,3 +653,44 @@ def test_every_averaging_down_card_in_the_corpus_parses_on_its_own_day():
         result = parse_card(card, today=day)
         assert isinstance(result, EntryAlert), (card.title, getattr(result, "detail", ""))
         assert result.average_down
+
+
+# --- one-line average-downs ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "avg QQQ 718P 1.50",
+        "AVG QQQ 718P 1.50",
+        "avg down QQQ 718P 1.50",
+        "average down QQQ 718P 1.50",
+        "averaging down QQQ 718P 1.50",
+        "QQQ 718P 1.50 avg",
+        "QQQ 718P 1.50 avg down",
+        "QQQ 718P 1.50 average down",
+    ],
+)
+def test_an_avg_keyword_marks_a_one_line_average_down(text):
+    alert = _simple(text)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.average_down
+    assert alert.option == OptionKey("QQQ", OCT_15, 718.0, "P")
+    assert alert.entry_price == 1.50
+
+
+def test_a_plain_one_line_alert_is_not_an_average_down():
+    assert _simple("QQQ 718P 1.50").average_down is False
+
+
+def test_an_average_down_can_name_a_date():
+    alert = _simple("avg QQQ 10/16 718P 1.50")
+
+    assert alert.average_down
+    assert alert.option.expiry == date(2026, 10, 16)
+
+
+@pytest.mark.parametrize("text", ["avg QQQ 718P", "avg", "QQQ 718P 1.50 avg lotto", "avg avg QQQ 718P 1.50"])
+def test_a_malformed_average_down_is_not_guessed_at(text):
+    assert _simple(text) is None

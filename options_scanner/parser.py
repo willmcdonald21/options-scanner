@@ -307,11 +307,18 @@ def _parse_average_down(card: ParsedCard, title: str, today: date) -> ParseResul
 # put. `$` and `@` are tolerated, case is not significant. The WHOLE message
 # must match: anything extra means it is not one of these, and the bot never
 # guesses at a partial match.
+#
+# An average-down is the same line with a keyword at the front or the back:
+# `avg QQQ 718P 1.50`, `QQQ 718P 1.50 avg down`, `average down ...`.
+_AVG_KEYWORD = r"(?:avg|avg\s+down|average\s+down|averaging\s+down)"
 _SIMPLE_ALERT_RE = re.compile(
-    r"^\s*\$?(?P<ticker>[A-Za-z]{1,6})"
+    rf"^\s*(?:(?P<pre>{_AVG_KEYWORD})\s+)?"
+    r"\$?(?P<ticker>[A-Za-z]{1,6})"
     r"(?:\s+(?P<month>\d{1,2})/(?P<day>\d{1,2})(?:/(?P<year>\d{2}|\d{4}))?)?"
     r"\s+(?P<strike>\d+(?:\.\d+)?)\s*(?P<right>[CcPp])"
-    r"\s+@?\s*\$?(?P<price>\d*\.?\d+)\s*$"
+    r"\s+@?\s*\$?(?P<price>\d*\.?\d+)"
+    rf"(?:\s+(?P<post>{_AVG_KEYWORD}))?\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -374,6 +381,7 @@ def parse_simple_alert(text: str, *, message_id: int, today: date) -> EntryAlert
         is_zero_dte=expiry == today,
         tier="normal",
         source="simple",
+        average_down=bool(match["pre"] or match["post"]),
     )
 
 
