@@ -364,11 +364,22 @@ cmd_doctor() {
     if [[ -z "$line" ]]; then
       warn "plist exists but the agent is not loaded (./ops.sh start scanner)"
     else
-      local last; last="$(awk '{print $2}' <<<"$line")"
-      if [[ "$last" == "0" || "$last" == "-" ]]; then
-        ok "agent loaded, last exit $last"
+      # `launchctl list` gives: PID (or "-" when not running), the PREVIOUS
+      # run's exit status, label. A non-zero status with a live PID is a run
+      # that failed once and was restarted -- e.g. started at boot before the
+      # network was up -- not a crash loop.
+      local pid last
+      pid="$(awk '{print $1}' <<<"$line")"
+      last="$(awk '{print $2}' <<<"$line")"
+      if [[ "$pid" =~ ^[0-9]+$ ]]; then
+        ok "running (pid $pid, up $(uptime_of "$pid")), restarts itself if it exits"
+        if [[ "$last" != "0" && "$last" != "-" ]]; then
+          note "an earlier run exited with status $last and was restarted — ./ops.sh logs scanner"
+        fi
+      elif [[ "$last" == "0" || "$last" == "-" ]]; then
+        warn "agent loaded but the bot is not running (./ops.sh start scanner)"
       else
-        bad "agent is crash-looping (last exit $last) — see ./ops.sh logs scanner"
+        bad "the bot keeps exiting (last status $last) — see ./ops.sh logs scanner"
       fi
     fi
   else
