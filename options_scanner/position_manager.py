@@ -31,7 +31,7 @@ from options_scanner.broker.base import Broker, BrokerError
 from options_scanner.config import Settings
 from options_scanner.contracts import ContractSpec, build_spec
 from options_scanner.execution import execute_exit, safe_sell_qty
-from options_scanner.market_hours import minutes_to_close, now_et, today_et
+from options_scanner.market_hours import is_market_open, minutes_to_close, now_et, today_et
 from options_scanner.models import PositionState
 from options_scanner.notifier import (
     Notification,
@@ -74,6 +74,10 @@ logger = logging.getLogger("options_scanner.position_manager")
 # hammered every poll.
 RECONNECT_FIRST_SECONDS = 10.0
 RECONNECT_MAX_SECONDS = 300.0
+# During the session the ceiling is much lower. On 2026-10-19 Gateway finished
+# logging in at 10:46:59, but the bot had backed off to five minutes and did
+# not try again until 10:50:04 -- a pasted alert at 10:47 failed in between.
+RECONNECT_MAX_IN_SESSION_SECONDS = 30.0
 
 # While positions are open and the broker is gone, the outage is restated this
 # often. Silence after one alert would be easy to miss; an alert every poll
@@ -147,6 +151,7 @@ class PositionManager:
         self._outage: _Outage | None = None
         # Injectable so a test can move time instead of waiting for it.
         self._monotonic = time.monotonic
+        self._is_market_open = is_market_open
 
     # --- registration ------------------------------------------------------
 
@@ -259,6 +264,9 @@ class PositionManager:
             notifications.extend(await self._while_disconnected())
             await self._post(*notifications)
             return notifications
+        if self._outage is not None:
+            # Reconnected by someone else -- a pasted alert connects on demand.
+            notifications.extend(await self._finish_outage(self._outage))
 
         for symbol in list(self.managed):
             managed = self.managed.get(symbol)
@@ -310,22 +318,20 @@ class PositionManager:
             return notes
 
         outage = self._outage
+        ceiling = self._reconnect_ceiling()
+        if outage.next_attempt - now > ceiling:
+            # The market opened while backed off to the overnight gap.
+            outage.backoff = ceiling
+            outage.next_attempt = now + ceiling
         if now >= outage.next_attempt:
             try:
                 await self.broker.connect()
             except Exception as exc:
                 logger.warning("reconnect attempt failed: %s", exc)
             if self.broker.is_connected:
-                self._outage = None
-                logger.info("broker reconnected after %.0fs", now - outage.started)
-                notes.append(broker_reconnected(down_seconds=now - outage.started))
-                # Positions may have changed while we could not see them --
-                # a fill, an expiry, a manual close. Re-check before acting.
-                lines, mismatched = await self.reconcile()
-                if lines or mismatched:
-                    notes.append(reconciliation(lines=lines, mismatched=mismatched))
+                notes.extend(await self._finish_outage(outage))
                 return notes
-            outage.backoff = min(outage.backoff * 2, RECONNECT_MAX_SECONDS)
+            outage.backoff = min(outage.backoff * 2, ceiling)
             outage.next_attempt = now + outage.backoff
             logger.info("still disconnected; next attempt in %.0fs", outage.backoff)
 
@@ -339,6 +345,45 @@ class PositionManager:
                 )
             )
         return notes
+
+    def _reconnect_ceiling(self) -> float:
+        try:
+            in_session = self._is_market_open()
+        except Exception:
+            in_session = True  # unsure: prefer retrying too often over too rarely
+        return RECONNECT_MAX_IN_SESSION_SECONDS if in_session else RECONNECT_MAX_SECONDS
+
+    async def _finish_outage(self, outage: _Outage) -> list[Notification]:
+        """The connection is back: say so, and re-check positions, which may
+        have changed while we could not see them -- a fill, an expiry, a
+        manual close."""
+        self._outage = None
+        down = self._monotonic() - outage.started
+        logger.info("broker reconnected after %.0fs", down)
+        notes: list[Notification] = [broker_reconnected(down_seconds=down)]
+        lines, mismatched = await self.reconcile()
+        if lines or mismatched:
+            notes.append(reconciliation(lines=lines, mismatched=mismatched))
+        return notes
+
+    async def ensure_connected(self) -> bool:
+        """Connect now if we are not, ignoring the retry schedule.
+
+        For a pasted alert: the trader is waiting on it, so it must not wait
+        out a backoff timer when Gateway may already be back. Returns whether
+        the broker is connected afterwards.
+        """
+        if not self.broker.is_connected:
+            try:
+                await self.broker.connect()
+            except Exception as exc:
+                logger.warning("on-demand connect failed: %s", exc)
+                return False
+            if not self.broker.is_connected:
+                return False
+        if self._outage is not None:
+            await self._post(*await self._finish_outage(self._outage))
+        return True
 
     async def poll_position(self, managed: Managed) -> Tick:
         """Advance one position by one quote."""

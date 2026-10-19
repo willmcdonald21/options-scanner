@@ -367,6 +367,17 @@ class AlertPipeline:
             )
             return
 
+        # A pasted alert should not wait out the reconnect schedule: Gateway
+        # may already be back, and the trader is waiting on this one.
+        if self.broker is not None and not self.broker.is_connected:
+            if self.manager is not None:
+                await self.manager.ensure_connected()
+            else:
+                try:
+                    await self.broker.connect()
+                except Exception as exc:
+                    logger.warning("on-demand connect failed: %s", exc)
+
         # The contract must exist before anything is ordered. A mis-parsed
         # strike or a wrong trading class has to fail here, not become a
         # silently different contract at the broker.

@@ -6,6 +6,8 @@ scripted price path. Nothing is mocked except the prices themselves.
 
 from datetime import date, datetime
 
+import pytest
+
 from conftest import SPX_OCC, TRADING_DAY, make_settings, paste
 
 from options_scanner.broker.base import BrokerError, Quote
@@ -521,6 +523,8 @@ async def test_the_trim_card_comes_before_the_stop_it_caused(storage):
 from options_scanner.position_manager import (  # noqa: E402
     OUTAGE_REMINDER_SECONDS,
     RECONNECT_FIRST_SECONDS,
+    RECONNECT_MAX_IN_SESSION_SECONDS,
+    RECONNECT_MAX_SECONDS,
 )
 from options_scanner.notifier import Level  # noqa: E402
 
@@ -539,6 +543,8 @@ def _outage(storage, *, reconnects: bool):
     feed, broker, manager, pipeline, risk = build(storage)
     clock = Clock()
     manager._monotonic = clock
+    # Pinned, so these do not depend on whether the real market is open.
+    manager._is_market_open = lambda: False
     calls = []
 
     async def connect():
@@ -687,3 +693,98 @@ async def test_re_tracking_keeps_the_link_to_the_alert(storage):
     await manager.reconcile()
 
     assert before and manager.managed[SPX_OCC].jump_url == before
+
+
+
+async def test_during_the_session_retries_never_wait_more_than_30s(storage):
+    """2026-10-19: Gateway was back at 10:46:59, but the bot had backed off to
+    five minutes and did not retry until 10:50:04."""
+    _, broker, manager, _, clock, calls = _outage(storage, reconnects=False)
+    manager._is_market_open = lambda: True
+    await _drop(broker)
+    await manager.poll_once()
+
+    for _ in range(int(600 / 1.5)):
+        clock.now += 1.5
+        await manager.poll_once()
+
+    gaps = [b - a for a, b in zip(calls, calls[1:])]
+    assert max(gaps) <= RECONNECT_MAX_IN_SESSION_SECONDS + 1.5
+
+
+async def test_outside_the_session_the_gap_grows_to_five_minutes(storage):
+    _, broker, manager, _, clock, calls = _outage(storage, reconnects=False)
+    await _drop(broker)
+    await manager.poll_once()
+
+    for _ in range(int(1800 / 1.5)):
+        clock.now += 1.5
+        await manager.poll_once()
+
+    gaps = [b - a for a, b in zip(calls, calls[1:])]
+    assert max(gaps) == pytest.approx(RECONNECT_MAX_SECONDS, abs=1.5)
+
+
+async def test_the_open_bell_cuts_an_overnight_backoff_short(storage):
+    _, broker, manager, _, clock, calls = _outage(storage, reconnects=False)
+    await _drop(broker)
+    await manager.poll_once()
+    for _ in range(int(900 / 1.5)):  # backed off to the 5-minute gap
+        clock.now += 1.5
+        await manager.poll_once()
+
+    manager._is_market_open = lambda: True
+    opened_at, before = clock.now, len(calls)
+    while len(calls) == before:
+        clock.now += 1.5
+        await manager.poll_once()
+
+    assert calls[-1] - opened_at <= RECONNECT_MAX_IN_SESSION_SECONDS + 1.5
+
+
+async def test_a_pasted_alert_connects_on_demand_instead_of_waiting(storage):
+    """The trader is waiting on a paste, so it must not wait out the retry
+    schedule when Gateway may already be back."""
+    feed, broker, manager, pipeline, clock, calls = _outage(storage, reconnects=True)
+    posted = []
+
+    async def notify(note):
+        posted.append(note)
+
+    manager._notify = notify
+    await _drop(broker)
+    await manager.poll_once()  # outage begins; next scheduled retry is 10s away
+
+    result = await enter(pipeline, feed)  # pasted 0s later
+
+    assert calls                                   # connected right away
+    assert has(result.notifications, "BUY")        # and traded
+    assert "Broker reconnected" in titles(posted)  # and said so
+    assert SPX_OCC in manager.managed
+
+
+async def test_a_paste_while_gateway_is_still_down_explains_itself(storage):
+    feed, broker, manager, pipeline, _, _ = _outage(storage, reconnects=False)
+
+    async def refuse(spec):
+        # What the real IBKR session does with no connection (2026-10-19 10:47).
+        raise BrokerError("not connected to IB")
+
+    feed.exists = refuse
+    await _drop(broker)
+
+    result = await enter(pipeline, feed)
+
+    assert not has(result.notifications, "BUY —")
+    assert any("not connected to IB" in n.description for n in result.notifications)
+
+
+async def test_a_connection_restored_elsewhere_still_closes_the_outage(storage):
+    _, broker, manager, _, clock, _ = _outage(storage, reconnects=False)
+    await _drop(broker)
+    await manager.poll_once()
+
+    broker._connected = True  # e.g. the pipeline reconnected it
+    notes = await manager.poll_once()
+
+    assert "Broker reconnected" in titles(notes)
