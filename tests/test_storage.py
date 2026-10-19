@@ -275,3 +275,23 @@ def test_arbitrary_state_round_trips(storage):
     storage.set_state("k", "v1")
     storage.set_state("k", "v2")
     assert storage.get_state("k") == "v2"
+
+
+def test_an_average_down_survives_a_restart(storage):
+    """An average-down changes the entry and the original size. Reloading the
+    old entry against the new quantity would run the wrong ladder."""
+    from options_scanner.rules import average_into
+
+    _seed_alert(storage)
+    state = _state(entry_fill=2.00, original_qty=1, remaining_qty=1, peak_bid=2.00)
+    position_id = storage.create_position(1, state)
+
+    average_into(state, added_qty=2, added_price=1.40)
+    storage.save_position(position_id, state)
+
+    (_, reloaded), = storage.open_positions()
+    assert reloaded.entry_fill == pytest.approx(1.60)
+    assert reloaded.original_qty == 3
+    assert reloaded.remaining_qty == 3
+    assert reloaded.stop_price is None
+    assert reloaded.fired_levels == frozenset()

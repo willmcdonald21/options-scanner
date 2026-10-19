@@ -166,9 +166,15 @@ class Storage:
 
     def save_position(self, position_id: int, state: PositionState, realized_pnl: float = 0.0) -> None:
         """Persist the whole rules state after every change. Cheap, and the
-        alternative is a restart that silently resets a stop."""
+        alternative is a restart that silently resets a stop.
+
+        entry_fill and original_qty are written too. They used to be fixed at
+        creation, but an average-down re-bases both, and a restart that
+        reloaded the old entry against the new quantity would run the wrong
+        ladder."""
         self._conn.execute(
             """UPDATE positions SET
+                 entry_fill = ?, original_qty = ?,
                  remaining_qty = ?, peak_bid = ?, stop_price = ?, stop_reason = ?,
                  trail_armed = ?, fired_levels = ?, consecutive_breaches = ?,
                  status = ?, realized_pnl = ?,
@@ -177,6 +183,8 @@ class Storage:
                  updated_at = datetime('now')
                WHERE id = ?""",
             (
+                state.entry_fill,
+                state.original_qty,
                 state.remaining_qty,
                 state.peak_bid,
                 state.stop_price,
