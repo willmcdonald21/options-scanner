@@ -723,3 +723,82 @@ def test_the_trail_band_and_the_ladder_agree_on_reaching_a_level():
     )
     assert 200 not in {a.level_pct for a in walk([8.85], state=state).actions
                        if isinstance(a, RunnerLevel)}
+
+
+# --- averaging down ------------------------------------------------------
+
+from options_scanner.rules import average_into  # noqa: E402
+
+
+def test_averaging_down_takes_the_weighted_average_entry():
+    state = _state(entry=2.00, qty=1)
+
+    change = average_into(state, added_qty=2, added_price=1.40)
+
+    # (1 x 2.00 + 2 x 1.40) / 3 = 1.60
+    assert state.entry_fill == pytest.approx(1.60)
+    assert state.remaining_qty == state.original_qty == 3
+    assert change.old_entry == 2.00 and change.new_entry == pytest.approx(1.60)
+
+
+def test_sold_contracts_stay_out_of_the_average():
+    """Trimmed contracts are realized. Only what is still held is averaged."""
+    state = _state(entry=1.00, qty=4)
+    state.remaining_qty = 2  # 2 already sold
+
+    average_into(state, added_qty=2, added_price=0.60)
+
+    assert state.entry_fill == pytest.approx(0.80)  # (2 x 1.00 + 2 x 0.60) / 4
+    assert state.original_qty == 4
+
+
+def test_the_ladder_starts_over_from_the_new_average():
+    state = _state()
+    walk([0.60], state=state)  # +25% fired, stop at break-even
+    assert state.fired_levels and state.stop_price is not None
+
+    average_into(state, added_qty=10, added_price=0.30)
+
+    assert state.fired_levels == frozenset()
+    assert state.trail_armed is False
+    result = walk([state.entry_fill * 1.26], state=state)
+    assert [t.level_pct for t in result.trims] == [25]  # fires again, off the new entry
+
+
+def test_averaging_down_clears_the_stop_like_a_fresh_buy():
+    """A break-even stop from the old entry sits above the add price. Kept, it
+    would sell the whole enlarged position on the next quote."""
+    state = _state()
+    walk([0.60], state=state)
+    old_stop = state.stop_price
+
+    change = average_into(state, added_qty=10, added_price=0.30)
+
+    assert state.stop_price is None
+    assert change.cleared_stop == old_stop
+    assert walk([0.31, 0.30, 0.30], state=state).stop_outs == []
+
+
+def test_the_stop_comes_back_when_the_new_ladder_first_trims():
+    state = _state(entry=1.00, qty=2)
+    average_into(state, added_qty=2, added_price=0.60)  # 4 @ 0.80
+
+    walk([1.01], state=state)  # +26% off 0.80
+
+    assert state.stop_price == round_price(0.80)
+    assert state.stop_reason == "breakeven"
+
+
+def test_you_cannot_average_into_a_closed_position():
+    state = _state()
+    walk([0.60, 0.40, 0.40], state=state)
+    assert state.closed
+
+    with pytest.raises(ValueError, match="closed position"):
+        average_into(state, added_qty=1, added_price=0.40)
+
+
+@pytest.mark.parametrize("qty,price", [(0, 1.0), (-1, 1.0), (2, 0.0)])
+def test_a_nonsensical_add_is_refused(qty, price):
+    with pytest.raises(ValueError):
+        average_into(_state(), added_qty=qty, added_price=price)

@@ -515,6 +515,69 @@ def apply_action(state: PositionState, action: Action) -> None:
         raise TypeError(f"unknown action {action!r}")
 
 
+@dataclass(frozen=True)
+class AveragedDown:
+    """What an average-down changed, for the card that reports it."""
+
+    old_entry: float
+    new_entry: float
+    held_qty: int
+    added_qty: int
+    new_qty: int
+    cleared_stop: float | None
+
+
+def average_into(state: PositionState, added_qty: int, added_price: float) -> AveragedDown:
+    """Merge a buy into a position already held. Mutates `state`.
+
+    IBKR keeps one position per contract, so buying more of a held contract
+    is one bigger position, and the bot has to manage it as one. The rule is
+    the advisor's own ("Trim Targets (new avg)"): re-base on the new average.
+
+    * entry  -- the weighted average over the contracts still HELD plus the
+      ones added. Contracts already sold are realized and stay out of it.
+    * ladder -- starts over. The fractions apply to the new total, and no
+      level has fired yet against the new entry.
+    * stop   -- cleared. An average-down is treated as a normal buy, and a
+      normal buy has no stop until its first trim fills. Kept, a break-even
+      stop from the old entry would usually sit above the price being added
+      at, and would sell the whole enlarged position on the next quote.
+    * peak and trail reset to the add, as for any new entry.
+
+    This is the one deliberate exception to "the stop never moves down".
+    It is the trader's explicit instruction rather than anything the rules
+    engine decides, which is why it lives outside apply_action.
+    """
+    if state.closed or state.remaining_qty <= 0:
+        raise ValueError("cannot average into a closed position; open a new one instead")
+    if added_qty <= 0 or added_price <= 0:
+        raise ValueError(f"an average-down needs a positive quantity and price, got {added_qty} @ {added_price}")
+
+    held = state.remaining_qty
+    total = held + added_qty
+    old_entry = state.entry_fill
+    cleared = state.stop_price
+
+    state.entry_fill = (held * old_entry + added_qty * added_price) / total
+    state.original_qty = total
+    state.remaining_qty = total
+    state.fired_levels = frozenset()
+    state.peak_bid = added_price
+    state.trail_armed = False
+    state.stop_price = None
+    state.stop_reason = None
+    state.consecutive_breaches = 0
+
+    return AveragedDown(
+        old_entry=old_entry,
+        new_entry=state.entry_fill,
+        held_qty=held,
+        added_qty=added_qty,
+        new_qty=total,
+        cleared_stop=cleared,
+    )
+
+
 def next_level(state: PositionState, config: RulesConfig | None = None) -> tuple[int, float] | None:
     """The next unfired level and its price, for `!status`. None once the
     whole ladder -- trims and runner levels alike -- is exhausted."""
@@ -526,6 +589,7 @@ def next_level(state: PositionState, config: RulesConfig | None = None) -> tuple
 
 
 __all__ = [
+    "AveragedDown",
     "DEFAULT_RUNNER_LEVELS",
     "DEFAULT_TRAIL_SCHEDULE",
     "DEFAULT_TRIM_SCHEDULE",
@@ -540,6 +604,7 @@ __all__ = [
     "Trim",
     "UpdatePeak",
     "apply_action",
+    "average_into",
     "evaluate",
     "level_price",
     "next_level",
