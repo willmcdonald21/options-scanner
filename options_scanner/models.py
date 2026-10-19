@@ -107,6 +107,12 @@ class EntryAlert:
     # so the pipeline checks its price against the live market instead.
     source: Literal["card", "simple"] = "card"
 
+    # An AVERAGING DOWN card, or a one-line alert marked `avg`. Treated as a
+    # normal buy -- including when the contract is already held, because
+    # sending one is a deliberate decision. IBKR keeps one position per
+    # contract, so a buy into a held contract merges into that position.
+    average_down: bool = False
+
 
 @dataclass(frozen=True)
 class RejectedAlert:
