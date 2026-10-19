@@ -328,3 +328,50 @@ def test_a_single_contract_is_not_pluralized():
     assert contracts(1) == "1 contract"
     assert contracts(0) == "0 contracts"
     assert contracts(21) == "21 contracts"
+
+
+# --- averaging down -------------------------------------------------------
+
+from options_scanner.notifier import alert_parsed, averaged_down  # noqa: E402
+
+
+def _avg_card(**overrides):
+    params = dict(
+        option=OPT, added_qty=2, fill_price=1.40, held_qty=1, old_entry=2.00,
+        new_qty=3, new_entry=1.60, cleared_stop=None,
+        levels=[(25, 2.00), (50, 2.40)], jump_url=JUMP, today=TODAY,
+    )
+    params.update(overrides)
+    return averaged_down(**params)
+
+
+def test_the_averaged_down_card_shows_the_merge():
+    note = _avg_card()
+
+    assert note.title == "AVERAGED DOWN — SPX 7815P · 0DTE"
+    assert "Added 2 @ $1.40" in note.description
+    assert "now 3 @ avg $1.60" in note.description
+    assert "was 1 @ $2.00" in note.description
+    fields = {name: value for name, value, _ in note.fields}
+    assert "25%" in fields["Trim Targets (new avg)"]
+
+
+def test_a_cleared_stop_is_said_out_loud():
+    """Clearing a stop reduces protection. It must never happen silently."""
+    note = _avg_card(cleared_stop=2.00)
+
+    assert "Stop $2.00 cleared" in note.description
+
+
+def test_with_no_stop_to_clear_it_still_says_when_one_returns():
+    assert "No stop until the first trim" in _avg_card().description
+
+
+def test_an_average_down_parse_card_says_so():
+    note = alert_parsed(
+        option=OPT, occ_symbol="SPXW  261006P07815000", entry_price=0.175,
+        advisor_contracts=40, our_contracts=6, cost=105.0, jump_url=JUMP,
+        levels=[], average_down=True, today=TODAY,
+    )
+
+    assert note.title.startswith("PARSED (AVG DOWN)")

@@ -214,6 +214,7 @@ def alert_parsed(
     jump_url: str | None,
     levels: list[tuple[int, float]],
     sizing_note: str = "",
+    average_down: bool = False,
     today: date | None = None,
 ) -> Notification:
     """What we read off the card, before anything is ordered.
@@ -225,8 +226,9 @@ def alert_parsed(
     description = contract_sentence(option)
     if sizing_note:
         description += f"\n{sizing_note}"
+    kind = "PARSED (AVG DOWN)" if average_down else "PARSED"
     note = Notification(
-        title=f"PARSED — {contract_label(option, today)}",
+        title=f"{kind} — {contract_label(option, today)}",
         level=Level.INFO,
         description=description,
         jump_url=jump_url,
@@ -376,6 +378,53 @@ def entry_filled(
     note.add("Cost", money(cost))
     if levels:
         note.add("Trim Targets", ladder_block(levels), inline=False)
+    return note
+
+
+def averaged_down(
+    *,
+    option: OptionKey,
+    added_qty: int,
+    fill_price: float,
+    held_qty: int,
+    old_entry: float,
+    new_qty: int,
+    new_entry: float,
+    cleared_stop: float | None,
+    levels: list[tuple[int, float]],
+    jump_url: str | None,
+    sizing_note: str = "",
+    today: date | None = None,
+) -> Notification:
+    """A buy into a contract already held, merged into one position.
+
+    Says plainly what happened to the stop: an average-down is treated as a
+    fresh buy, so any stop is cleared until the new ladder's first trim fills.
+    That is a real reduction in protection and must not happen silently.
+    """
+    lines = [
+        f"Added {added_qty} @ {price(fill_price)} · now {new_qty} @ avg {price(new_entry)} "
+        f"(was {held_qty} @ {price(old_entry)}).",
+    ]
+    if cleared_stop is not None:
+        lines.append(
+            f"Stop {price(cleared_stop)} cleared — like a fresh buy, there is no stop until the "
+            "first trim of the new ladder fills."
+        )
+    else:
+        lines.append("No stop until the first trim of the new ladder fills.")
+    if sizing_note:
+        lines.append(sizing_note)
+    note = Notification(
+        title=f"AVERAGED DOWN — {contract_label(option, today)}",
+        level=Level.SUCCESS,
+        description="\n".join(lines),
+        jump_url=jump_url,
+    )
+    note.add("Added", f"{contracts(added_qty)} @ {price(fill_price)}")
+    note.add("Position", f"{contracts(new_qty)} @ {price(new_entry)}")
+    if levels:
+        note.add("Trim Targets (new avg)", ladder_block(levels), inline=False)
     return note
 
 
