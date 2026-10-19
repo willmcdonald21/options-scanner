@@ -46,7 +46,7 @@ _MONTHS = {
 # the year. The title's "· 0DTE" / "· Sep 30" tag is a cross-check, not a
 # source of truth.
 _CONTRACT_LINE_RE = re.compile(
-    r"(?:Entered|Fully out of)\s+"
+    r"(?:Entered|Fully out of|Averaging down on)\s+"
     r"(?P<ticker>[A-Z]+)\s+"
     r"(?P<mon>[A-Za-z]{3})(?P<day>\d{1,2})\s*'(?P<yy>\d{2})\s+"
     r"(?P<strike>[\d.]+)\s+"
@@ -60,6 +60,9 @@ _TITLE_UNDERLYING_RE = re.compile(r"(?P<ticker>[A-Z]+)\s+(?P<strike>[\d.]+)(?P<r
 
 _TITLE_BUY_RE = re.compile(r"^BUY\b", re.IGNORECASE)
 _TITLE_AVG_DOWN_RE = re.compile(r"^AVERAGING DOWN\b", re.IGNORECASE)
+
+# "Added 40 @ $0.175" -- on an AVERAGING DOWN card, the price being paid now.
+_ADDED_RE = re.compile(r"\bAdded\s+(?P<qty>[\d,]+)\s*@\s*\$?(?P<price>[\d,]*\.?\d+)", re.IGNORECASE)
 _TITLE_TRIM_RE = re.compile(r"^TRIM\s*\+?(?P<pct>\d+)%", re.IGNORECASE)
 _TITLE_SOLD_ALL_RE = re.compile(r"^SOLD ALL\s*(?P<sign>[+-])(?P<pct>\d+(?:\.\d+)?)%", re.IGNORECASE)
 _TITLE_EXPIRED_RE = re.compile(r"^EXPIRED\s*·?\s*(?P<result>WIN|LOSS)", re.IGNORECASE)
@@ -224,6 +227,76 @@ def _check_trim_targets(
     return None
 
 
+def _parse_average_down(card: ParsedCard, title: str, today: date) -> ParseResult:
+    """An AVERAGING DOWN card, read as a buy at the price being added at.
+
+        AVERAGING DOWN — SPY 767P · 0DTE
+        Averaging down on SPY Sep21 '26 767 Put
+        Added 40 @ $0.175
+        New Avg $0.215 · Total Contracts 80 · Cost $1,720
+        Trim Targets (new avg)  25% $0.269 ...
+
+    The entry is the "Added @" price -- what is being paid now. The trim
+    targets are measured from the advisor's NEW AVERAGE, so the checksum runs
+    against New Avg, not against the add price.
+    """
+
+    def reject(reason: RejectReason, detail: str) -> RejectedAlert:
+        return RejectedAlert(card.message_id, reason, detail, title)
+
+    try:
+        option = _parse_contract_line(card.description)
+    except ValueError as exc:
+        return reject(RejectReason.UNPARSABLE_CONTRACT, str(exc))
+
+    added = _ADDED_RE.search(card.description or "")
+    if added is None:
+        return reject(RejectReason.MISSING_FIELD, "card has no 'Added N @ $price' line")
+    if "New Avg" not in card.fields:
+        return reject(RejectReason.MISSING_FIELD, "card has no 'New Avg' field")
+
+    try:
+        added_qty = int(added["qty"].replace(",", ""))
+        added_price = float(added["price"].replace(",", ""))
+        new_avg = _parse_money(card.fields["New Avg"])
+    except ValueError as exc:
+        return reject(RejectReason.UNPARSABLE_NUMBER, str(exc))
+
+    if added_price <= 0 or new_avg <= 0:
+        return reject(
+            RejectReason.NON_POSITIVE_PRICE,
+            f"added at ${added_price:.4f}, new average ${new_avg:.4f}",
+        )
+    if added_qty <= 0:
+        return reject(RejectReason.NON_POSITIVE_PRICE, f"advisor added {added_qty} contracts")
+
+    is_zero_dte, expiry_rejection = _check_expiry(option, title, today)
+    if expiry_rejection is not None:
+        return RejectedAlert(
+            card.message_id, expiry_rejection.reason, expiry_rejection.detail, title
+        )
+
+    targets = parse_trim_targets(card.fields)
+    target_rejection = _check_trim_targets(new_avg, targets, title)
+    if target_rejection is not None:
+        return RejectedAlert(
+            card.message_id, target_rejection.reason, target_rejection.detail, title
+        )
+
+    return EntryAlert(
+        message_id=card.message_id,
+        tier=detect_tier(card),
+        option=option,
+        entry_price=added_price,
+        advisor_contracts=added_qty,
+        advisor_cost=added_qty * added_price * 100,
+        trim_targets=targets,
+        raw_title=title,
+        is_zero_dte=is_zero_dte,
+        average_down=True,
+    )
+
+
 # One-line alerts from the second analyst: `QQQ 718P 1.99`.
 #
 #   ticker   strike+right   price per share
@@ -346,7 +419,7 @@ def parse_card(card: ParsedCard, today: date) -> ParseResult:
     if _TITLE_NEW_ALERT_RE.match(title):
         return InfoAlert(card.message_id, "new_alert", title, "prospective level, not a confirmed fill")
     if _TITLE_AVG_DOWN_RE.match(title):
-        return InfoAlert(card.message_id, "averaging_down", title, "this bot does not average down")
+        return _parse_average_down(card, title, today)
     if _TITLE_TRIM_RE.match(title):
         return InfoAlert(card.message_id, "advisor_trim", title, "our own trims are managed independently")
     if _TITLE_SOLD_ALL_RE.match(title):

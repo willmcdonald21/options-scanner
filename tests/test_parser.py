@@ -285,7 +285,6 @@ def test_ordinary_chatter_produces_no_cards_at_all():
         ("SOLD ALL +130% — GOOGL 350C · Oct 2", "advisor_exit"),
         ("EXPIRED · WIN — SPY 772P · 0DTE", "advisor_expired"),
         ("NEW ALERT — SPY 770C · 0DTE", "new_alert"),
-        ("AVERAGING DOWN — SPY 767P · 0DTE", "averaging_down"),
         ("+25% — TSLA 380C · 0DTE", "milestone"),
     ],
 )
@@ -446,7 +445,7 @@ def test_the_corpus_tiers_are_what_the_advisor_wrote():
     """Of the seven BUY cards in the 80-message corpus: two lottos, one super
     lotto, four normal."""
     _, results = _fixture_results()
-    entries = [r for r in results if isinstance(r, EntryAlert)]
+    entries = [r for r in results if isinstance(r, EntryAlert) and not r.average_down]
     tiers = sorted(a.tier for a in entries)
 
     assert tiers.count("lotto") == 2
@@ -569,3 +568,88 @@ def test_anything_else_is_not_a_one_line_alert(text):
 
 def test_a_full_card_is_never_taken_for_a_one_line_alert():
     assert _simple(SPEC_ALERT) is None
+
+
+
+# --- AVERAGING DOWN cards are buys ---------------------------------------
+
+# The real SPY card from the corpus, verbatim.
+AVG_DOWN_ALERT = """AVERAGING DOWN — SPY 767P · 0DTE
+Averaging down on SPY Sep21 '26 767 Put
+Added 40 @ $0.175
+Open Live Dashboard →
+
+Average $0.255 → $0.215 · 40 → 80 contracts
+New Avg
+$0.215
+Total Contracts
+80
+Cost
+$1,720
+Trim Targets (new avg)
+25%   $0.269
+50%   $0.323
+75%   $0.376
+100%  $0.430
+
+Not financial advice"""
+
+
+def test_an_averaging_down_card_is_a_buy_at_the_added_price():
+    alert = _parse(AVG_DOWN_ALERT, today=SEPT_21)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.average_down
+    assert alert.option == OptionKey("SPY", SEPT_21, 767.0, "P")
+    assert alert.entry_price == 0.175       # what is being paid now
+    assert alert.advisor_contracts == 40    # what the advisor added
+    assert alert.is_zero_dte
+
+
+def test_the_checksum_runs_against_the_new_average_not_the_add_price():
+    """The card's targets are measured from New Avg ($0.215): $0.269 is
+    0.215 x 1.25. Checked against the $0.175 add price they would all fail."""
+    alert = _parse(AVG_DOWN_ALERT, today=SEPT_21)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.trim_targets[0].price == 0.269
+
+
+def test_a_misread_new_average_is_caught_by_the_checksum():
+    tampered = AVG_DOWN_ALERT.replace("New Avg\n$0.215", "New Avg\n$0.315")
+
+    result = _parse(tampered, today=SEPT_21)
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.TRIM_TARGET_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "remove,reason",
+    [
+        ("Added 40 @ $0.175\n", RejectReason.MISSING_FIELD),
+        ("New Avg\n$0.215\n", RejectReason.MISSING_FIELD),
+    ],
+)
+def test_an_averaging_down_card_missing_its_numbers_is_rejected(remove, reason):
+    result = _parse(AVG_DOWN_ALERT.replace(remove, ""), today=SEPT_21)
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is reason
+
+
+def test_every_averaging_down_card_in_the_corpus_parses_on_its_own_day():
+    """Seven real cards. Each is checked on its own expiry day, since most are
+    0DTE and would otherwise fail the date check."""
+    text = FIXTURE.read_text()
+    cards = [c for c in parse_cards(text, reference_date=datetime(2026, 9, 21))
+             if c.title.startswith("AVERAGING DOWN")]
+    assert len(cards) == 7
+
+    for card in cards:
+        from options_scanner.parser import _parse_contract_line
+
+        day = _parse_contract_line(card.description).expiry if "0DTE" in card.title else date(2026, 9, 21)
+        result = parse_card(card, today=day)
+        assert isinstance(result, EntryAlert), (card.title, getattr(result, "detail", ""))
+        assert result.average_down
