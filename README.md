@@ -25,6 +25,58 @@ You paste an advisor alert into the **alerts channel**. The bot:
 7. reacts ✅ (ordered), ❌ (rejected) or 🚫 (skipped) and posts the detail to the
    **updates channel**
 
+### What you can paste
+
+**The advisor's full BUY card**, exactly as posted. Its trim targets are used as
+a checksum: if they don't match the entry, a number was misread and the alert
+is rejected.
+
+**A one-line alert** from the second analyst:
+
+```
+QQQ 718P 1.99              today's QQQ 718 put at $1.99
+iwm 271p .7                case and a bare decimal are fine
+QQQ 10/16 718P 1.99        a date overrides "today"
+```
+
+No date means **today's contract**. That was checked against the live chain:
+QQQ 718P at 1.99 matched only the same-day put. The whole message must match;
+anything extra is not read as an alert. This format has no checksum, so the
+live market stands in for one: the alert is skipped if the ask is more than
+**25% below** its price (a typo, or not the contract meant) or if there is no
+ask to check against.
+
+**An average-down**, as the advisor's AVERAGING DOWN card or as a one-line
+alert with `avg` (also `avg down`, `average down`, `averaging down`) at the
+front or back: `avg QQQ 718P 1.50`, `QQQ 718P 1.50 avg`. It is **treated as a
+normal buy**, including when you already hold that contract. The card buys at
+its "Added @" price.
+
+Holding the contract already, the new contracts **merge into one position**,
+since IBKR keeps one per contract:
+
+- the entry becomes the weighted average of what is still held plus what was added
+- the trim ladder starts over from that average, as on the advisor's
+  "Trim Targets (new avg)"
+- **any stop is cleared** until the new ladder's first trim fills, like a fresh
+  buy. The AVERAGED DOWN card names the stop it cleared.
+
+A plain BUY for a contract already held is still skipped. Only an average-down
+buys more.
+
+### When to expect a skip
+
+| Reason | Rule |
+|---|---|
+| `ask_above_cap` | ask more than **10% above** the alert price — not chasing |
+| `price_mismatch` | one-line alerts: ask more than **25% below**, or no ask |
+| `contract_too_expensive` | alert price above **$3.00**; the walk never pays more either |
+| `budget_too_small` | the budget can't buy one contract: $300, **$150 lotto**, **$75 super lotto** |
+| market / cutoff | outside 9:30–16:00 ET; **no new entries after 15:30** |
+| limits | **2 open positions**, **$400 lost** today, or **10 trades** today |
+| `duplicate_alert` | same contract at the same price within **15 minutes** |
+| `contract_not_found` | IBKR does not list the contract |
+
 ### Position management
 
 Measured from your **actual fill price**, never the advisor's quoted entry.
@@ -415,6 +467,34 @@ the second account.
 What a second account does **not** isolate: one Gateway process (an outage still
 stops both), the market-data line pool, and API request pacing. Those follow
 from using one login.
+
+### When Gateway drops
+
+The bot keeps going and reconnects by itself:
+
+- **one** alert when the connection drops. It is critical (a ping) only if a
+  position is open, because only then is a stop blind; otherwise a quiet warning.
+- retries every **30 seconds at most during market hours**, backing off to 5
+  minutes outside them
+- a pasted alert **connects immediately** rather than waiting for the next retry
+- **"Broker reconnected"** when it is back, followed by a re-check of every
+  position against IBKR
+- while positions are open and it is still down, a reminder every 15 minutes
+
+Gateway only opens its API port **after you sign in**. A Gateway window sitting at
+the login screen refuses the bot exactly like a closed one.
+
+Set **Configure → Settings → Lock and Exit → Auto restart** and click **Apply**.
+Without it Gateway logs off overnight and stays off. IBKR still requires a
+manual sign-in about once a week.
+
+### Shared paper account
+
+IBKR allows one paper account per login, so on paper both bots trade the same
+account. warrior_bot is patched to act only on **stocks**: its 15:55 EOD flatten,
+daily-loss flatten and kill switch leave option positions alone, and option
+fills and positions stay out of its risk numbers. `doctor` checks the patch is
+present, on its main, and running.
 
 ### Keeping the scanner up
 
