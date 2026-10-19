@@ -29,7 +29,10 @@ You paste an advisor alert into the **alerts channel**. The bot:
 
 **The advisor's full BUY card**, exactly as posted. Its trim targets are used as
 a checksum: if they don't match the entry, a number was misread and the alert
-is rejected.
+is rejected. A card with **no** targets (an empty "Trim Targets" block, or a
+paste cut short) is accepted: the bot always assigns its own ladder from the
+fill, and checks the price against the live market instead, as for one-line
+alerts.
 
 **A one-line alert** from the second analyst:
 
@@ -69,7 +72,7 @@ buys more.
 | Reason | Rule |
 |---|---|
 | `ask_above_cap` | ask more than **10% above** the alert price — not chasing |
-| `price_mismatch` | one-line alerts: ask more than **25% below**, or no ask |
+| `price_mismatch` | alerts with no trim targets (one-line, or a card without them): ask more than **25% below**, or no ask |
 | `contract_too_expensive` | alert price above **$3.00**; the walk never pays more either |
 | `budget_too_small` | the budget can't buy one contract: $300, **$150 lotto**, **$75 super lotto** |
 | market / cutoff | outside 9:30–16:00 ET; **no new entries after 15:30** |
