@@ -442,10 +442,11 @@ class AlertPipeline:
             # a $2.95 alert's slippage walk would otherwise reach $3.25.
             cap_price = min(cap_price, max_price)
 
-        # A one-line alert has no trim-target checksum, so the live market is
-        # the only check that we have the contract the analyst meant. Dry run
+        # With no trim targets -- a one-line alert, or a card whose ladder was
+        # missing -- nothing has checked that the entry price was read right
+        # or that this is the contract meant, so the live market does. Dry run
         # has no broker and sends nothing, so there is nothing to check there.
-        if alert.source == "simple" and self.broker is not None:
+        if not alert.trim_targets and self.broker is not None:
             floor_pct = settings.entry.max_ask_below_alert_pct
             floor = reference_price * (1 - floor_pct / 100.0)
             ask = quote.ask if quote is not None else None
@@ -456,11 +457,15 @@ class AlertPipeline:
                     "against the market. Nothing was ordered."
                 )
             elif ask < floor:
+                hint = (
+                    " (a one-line alert means today's contract unless it names a date)"
+                    if alert.source == "simple" else ""
+                )
                 mismatch = (
                     f"the alert says {reference_price:.2f} but the contract asks {ask:.2f}, "
-                    f"more than {floor_pct:.0f}% below. That is usually a typo or a different "
-                    "expiry than the analyst meant (a one-line alert means today's unless it "
-                    "names a date). Nothing was ordered."
+                    f"more than {floor_pct:.0f}% below. With no trim targets to confirm the "
+                    f"price, that is usually a typo or a different contract than meant{hint}. "
+                    "Nothing was ordered."
                 )
             if mismatch:
                 record(STATUS_SKIPPED, f"price_mismatch: {mismatch}")

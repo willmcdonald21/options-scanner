@@ -788,3 +788,54 @@ async def test_a_message_that_is_neither_format_is_still_unreadable(pipeline):
     result = await paste(pipeline, text="QQQ 718P 1.99 lotto")
 
     assert result.final_reaction == REACTION_REJECTED
+
+
+
+# --- cards with no trim targets -------------------------------------------
+#
+# The bot assigns its own ladder from the fill; the live market stands in for
+# the missing checksum, exactly as for one-line alerts.
+
+def _no_targets(card: str = SPEC_ALERT) -> str:
+    return "\n".join(
+        line for line in card.splitlines()
+        if "%   $" not in line and "%  $" not in line
+    )
+
+
+async def test_a_card_with_no_trim_targets_is_traded(storage):
+    broker = FakeBroker()  # 0.47 / 0.48 against the card's 0.475
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text=_no_targets())
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert "25%" in values["Trim Targets"]  # the bot's own ladder, assigned
+
+
+async def test_a_card_with_no_targets_far_above_the_market_is_skipped(storage):
+    broker = FakeBroker(bid=0.30, ask=0.31)
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text=_no_targets())
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    description = find(result, "skipped").description
+    assert "no trim targets" in description
+    assert "one-line" not in description  # the hint is only for one-line alerts
+
+
+async def test_a_card_with_no_targets_and_no_quote_is_skipped(storage):
+    broker = FakeBroker(quote_raises=True)
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text=_no_targets())
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
