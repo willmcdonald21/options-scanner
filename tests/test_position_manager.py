@@ -788,3 +788,133 @@ async def test_a_connection_restored_elsewhere_still_closes_the_outage(storage):
     notes = await manager.poll_once()
 
     assert "Broker reconnected" in titles(notes)
+
+
+# --- averaging down, end to end -----------------------------------------
+#
+# enter() fills 21 SPX 7815P at the 0.48 ask. An average-down at 0.40 then
+# buys 25 more ($1,000 / $40) and merges: 46 @ (21 x 0.48 + 25 x 0.40) / 46.
+
+AVG_ONE_LINE = "avg SPX 7815P 0.40"
+AVG_CARD = """AVERAGING DOWN — SPX 7815P · 0DTE
+Averaging down on SPX Oct06 '26 7815 Put
+Added 25 @ $0.40
+Open Live Dashboard →
+
+New Avg
+$0.44
+Total Contracts
+50
+Cost
+$2,200
+Trim Targets (new avg)
+25%   $0.550
+50%   $0.660
+75%   $0.770
+100%  $0.880
+
+Not financial advice"""
+MERGED_ENTRY = (21 * 0.48 + 25 * 0.40) / 46
+
+
+async def _average_down(pipeline, feed, text=AVG_ONE_LINE, message_id=700_002):
+    feed.set(0.39, 0.40)
+    return await paste(pipeline, text=text, message_id=message_id)
+
+
+async def test_an_average_down_buys_more_and_merges_into_the_position(storage):
+    feed, broker, manager, pipeline, _ = build(storage)
+    await enter(pipeline, feed)
+
+    result = await _average_down(pipeline, feed)
+
+    assert has(result.notifications, "AVERAGED DOWN")
+    state = manager.managed[SPX_OCC].state
+    assert state.remaining_qty == state.original_qty == 46
+    assert state.entry_fill == pytest.approx(MERGED_ENTRY)
+    (position,) = await broker.get_positions()
+    assert position.qty == 46  # the broker agrees: one position, 46 contracts
+    assert storage.open_position_count() == 1
+
+
+async def test_the_full_averaging_down_card_works_the_same(storage):
+    feed, _, manager, pipeline, _ = build(storage)
+    await enter(pipeline, feed)
+
+    result = await _average_down(pipeline, feed, text=AVG_CARD)
+
+    assert has(result.notifications, "AVERAGED DOWN")
+    assert has(result.notifications, "PARSED (AVG DOWN)")
+    assert manager.managed[SPX_OCC].state.remaining_qty == 46
+
+
+async def test_after_averaging_down_the_ladder_trims_off_the_new_average(storage):
+    feed, broker, manager, pipeline, _ = build(storage)
+    await enter(pipeline, feed)
+    await _average_down(pipeline, feed)
+
+    feed.set(round(MERGED_ENTRY * 1.26, 2))
+    notes = await manager.poll_once()
+
+    assert has(notes, "TRIM +25%")
+    assert manager.managed[SPX_OCC].state.remaining_qty == 46 - 23  # half of the new 46
+
+
+async def test_averaging_down_clears_a_break_even_stop_and_says_so(storage):
+    """Held with a break-even stop at 0.48, the price falls to 0.40, and an
+    average-down buys there. Kept, the stop would sell all 46 on the next
+    quotes -- the opposite of what the trader asked for."""
+    feed, _, manager, pipeline, _ = build(storage)
+    await enter(pipeline, feed)
+    feed.set(0.62)
+    await manager.poll_once()  # +25% trim: 11 sold, stop to break-even 0.48
+    held = manager.managed[SPX_OCC].state.remaining_qty
+    assert manager.managed[SPX_OCC].state.stop_price == 0.48
+
+    result = await _average_down(pipeline, feed)
+
+    card = next(n for n in result.notifications if n.title.startswith("AVERAGED DOWN"))
+    assert "Stop $0.48 cleared" in card.description
+    state = manager.managed[SPX_OCC].state
+    assert state.stop_price is None
+    assert state.remaining_qty == held + 25
+
+    for _ in range(3):
+        assert not has(await manager.poll_once(), "SOLD ALL")
+
+
+async def test_an_average_down_with_nothing_held_is_a_plain_buy(storage):
+    feed, broker, manager, pipeline, _ = build(storage)
+
+    result = await _average_down(pipeline, feed)
+
+    assert has(result.notifications, "BUY —")
+    assert not has(result.notifications, "AVERAGED DOWN")
+    assert manager.managed[SPX_OCC].state.remaining_qty == 25
+
+
+async def test_a_plain_buy_for_a_held_contract_is_still_skipped(storage):
+    feed, broker, manager, pipeline, _ = build(storage)
+    await enter(pipeline, feed)
+
+    feed.set(0.39, 0.40)
+    result = await paste(pipeline, text="SPX 7815P 0.40", message_id=700_003)
+
+    assert has(result.notifications, "skipped")
+    assert manager.managed[SPX_OCC].state.remaining_qty == 21
+
+
+async def test_the_merged_position_survives_a_restart(storage):
+    feed, broker, manager, pipeline, _ = build(storage)
+    await enter(pipeline, feed)
+    await _average_down(pipeline, feed)
+
+    settings = make_settings(mode="paper")
+    reborn = PositionManager(settings, storage, RiskGate(settings, storage), broker)
+    reborn.today = lambda: TRADING_DAY
+    _, mismatched = await reborn.reconcile()
+
+    state = reborn.managed[SPX_OCC].state
+    assert mismatched is False
+    assert state.remaining_qty == state.original_qty == 46
+    assert state.entry_fill == pytest.approx(MERGED_ENTRY)

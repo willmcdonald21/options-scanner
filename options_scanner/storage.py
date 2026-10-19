@@ -212,6 +212,15 @@ class Storage:
         ).fetchone()
         return int(row["n"])
 
+    def position_realized(self, position_id: int) -> float:
+        """Realized P&L booked so far on a position. Needed by anything that
+        re-saves a position it did not load through the position manager --
+        save_position writes realized_pnl, so passing a guess would erase it."""
+        row = self._conn.execute(
+            "SELECT realized_pnl FROM positions WHERE id = ?", (position_id,)
+        ).fetchone()
+        return float(row["realized_pnl"] or 0.0) if row else 0.0
+
     def position_for_symbol(self, occ_symbol: str) -> tuple[int, PositionState] | None:
         row = self._conn.execute(
             "SELECT * FROM positions WHERE occ_symbol = ? AND status = 'OPEN'", (occ_symbol,)

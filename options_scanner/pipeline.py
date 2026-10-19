@@ -44,6 +44,7 @@ from options_scanner.notifier import (
     alert_parsed,
     alert_rejected,
     alert_skipped,
+    averaged_down,
     entry_filled,
     entry_unfilled,
     error as error_note,
@@ -54,7 +55,7 @@ from options_scanner.notifier import (
 )
 from options_scanner.parser import parse_card, parse_simple_alert
 from options_scanner.risk import RiskGate
-from options_scanner.rules import level_price
+from options_scanner.rules import average_into, level_price
 from options_scanner.sizing import (
     Budget,
     affords_one_contract,
@@ -349,7 +350,11 @@ class AlertPipeline:
         settings = self.settings
 
         decision = self.risk.check_entry(
-            spec.occ_symbol, alert.entry_price, moment=moment, trading_day=trading_day
+            spec.occ_symbol,
+            alert.entry_price,
+            moment=moment,
+            trading_day=trading_day,
+            adding=alert.average_down,
         )
         if not decision.allowed:
             status = STATUS_DUPLICATE if decision.reason.value == "duplicate_alert" else STATUS_SKIPPED
@@ -568,6 +573,7 @@ class AlertPipeline:
             jump_url=jump_url,
             levels=ladder,
             sizing_note=size_note,
+            average_down=alert.average_down,
             today=trading_day,
         )
 
@@ -680,6 +686,20 @@ class AlertPipeline:
                 ),
             )
 
+        if alert.average_down and self._merge_into_held(
+            alert=alert,
+            spec=spec,
+            filled=filled,
+            fill_price=fill_price,
+            order_id=order_id,
+            record=record,
+            jump_url=jump_url,
+            size_note=size_note,
+            trading_day=trading_day,
+            result=result,
+        ):
+            return
+
         state = PositionState(
             option=alert.option,
             entry_fill=fill_price,
@@ -716,6 +736,78 @@ class AlertPipeline:
                 today=trading_day,
             ),
         )
+
+    def _merge_into_held(
+        self,
+        *,
+        alert: EntryAlert,
+        spec,
+        filled: int,
+        fill_price: float,
+        order_id: int,
+        record,
+        jump_url: str | None,
+        size_note: str,
+        trading_day: date,
+        result: Handled,
+    ) -> bool:
+        """Fold an average-down's fill into the position already held in the
+        same contract. Returns False when nothing is held -- including when the
+        held position closed while this order was working -- and the caller
+        then opens a new position as for any other buy.
+
+        No awaits in here: the position manager polls the same state object,
+        so the merge has to land in one step between its polls.
+        """
+        managed = self.manager.managed.get(spec.occ_symbol) if self.manager is not None else None
+        if managed is not None and not managed.state.closed and managed.state.remaining_qty > 0:
+            position_id, state, realized = managed.position_id, managed.state, managed.realized
+        else:
+            held = self.storage.position_for_symbol(spec.occ_symbol)
+            if held is None:
+                return False
+            position_id, state = held
+            if state.closed or state.remaining_qty <= 0:
+                return False
+            realized = self.storage.position_realized(position_id)
+
+        change = average_into(state, filled, fill_price)
+        self.storage.save_position(position_id, state, realized)
+        self.storage.update_order(order_id, detail=f"average-down into position {position_id}")
+
+        record(
+            STATUS_ACCEPTED,
+            f"averaged down: +{filled} @ {fill_price:.3f} -> {change.new_qty} @ {change.new_entry:.3f}",
+            alert=alert,
+        )
+        self.risk.record_entry(trading_day)
+        result.accepted.append(alert)
+
+        if self.manager is not None and managed is None:
+            self.manager.track(position_id, state, jump_url=jump_url)
+
+        result.add(
+            REACTION_PLACED,
+            averaged_down(
+                option=alert.option,
+                added_qty=filled,
+                fill_price=fill_price,
+                held_qty=change.held_qty,
+                old_entry=change.old_entry,
+                new_qty=change.new_qty,
+                new_entry=change.new_entry,
+                cleared_stop=change.cleared_stop,
+                levels=[
+                    (level, level_price(change.new_entry, level))
+                    for level, pct in self.settings.trim.schedule
+                    if pct > 0
+                ],
+                jump_url=jump_url,
+                sizing_note=size_note,
+                today=trading_day,
+            ),
+        )
+        return True
 
     async def _trade_budget(self, tier: str) -> tuple[Budget, bool] | None:
         """The budget for one trade, and whether the equity behind it was
