@@ -1,3 +1,4 @@
+import pytest
 """The risk gate. Every check here can only ever refuse to OPEN a position;
 nothing in risk.py touches an existing one, because halting and the daily loss
 limit stop new entries while open positions keep being managed.
@@ -122,7 +123,68 @@ def test_holding_the_same_contract_blocks_adding_to_it(storage):
         "SPXW  261006C07815000", ENTRY, moment=MID_SESSION, trading_day=TRADING_DAY
     )
     assert decision.reason is BlockReason.ALREADY_IN_POSITION
-    assert "does not add to a position" in decision.detail
+    assert "average-down" in decision.detail  # and says how to do it on purpose
+
+
+# --- average-downs ----------------------------------------------------------
+
+HELD = "SPXW  261006C07815000"
+
+
+def _add(g, symbol=HELD, entry=ENTRY):
+    return g.check_entry(symbol, entry, moment=MID_SESSION, trading_day=TRADING_DAY, adding=True)
+
+
+def test_an_average_down_may_buy_into_a_held_contract(storage):
+    """Sending one is a deliberate decision; it is treated as a normal buy."""
+    g = gate(storage)
+    _seed_position(storage, ticker="SPX", strike=7815.0)
+
+    assert _add(g).allowed
+
+
+def test_adding_to_a_held_contract_takes_no_new_position_slot(storage):
+    """IBKR holds one position per contract, so buying more of it is still
+    one position -- a full slot count must not block it."""
+    g = gate(storage, risk={"max_open_positions": 1})
+    _seed_position(storage, ticker="SPX", strike=7815.0)
+
+    assert _add(g).allowed
+
+
+def test_an_average_down_into_a_new_contract_still_needs_a_slot(storage):
+    g = gate(storage, risk={"max_open_positions": 1})
+    _seed_position(storage)  # QQQ, a different contract
+
+    assert _add(g, symbol=SPX_OCC).reason is BlockReason.MAX_OPEN_POSITIONS
+
+
+@pytest.mark.parametrize(
+    "setup,reason",
+    [
+        (lambda g, st: g.halt("test"), BlockReason.HALTED),
+        (lambda g, st: st.bump_day(TRADING_DAY, realized_pnl=-5_000.0), BlockReason.DAILY_LOSS_LIMIT),
+        (lambda g, st: st.bump_day(TRADING_DAY, entries=99), BlockReason.MAX_TRADES_PER_DAY),
+    ],
+)
+def test_every_other_limit_still_applies_to_an_average_down(storage, setup, reason):
+    g = gate(storage)
+    _seed_position(storage, ticker="SPX", strike=7815.0)
+    setup(g, storage)
+
+    assert _add(g).reason is reason
+
+
+def test_an_average_down_after_the_cutoff_is_still_blocked(storage):
+    from datetime import datetime
+
+    from options_scanner.market_hours import EASTERN
+
+    g = gate(storage)
+    late = datetime(2026, 10, 6, 15, 45, tzinfo=EASTERN)
+
+    decision = g.check_entry(HELD, ENTRY, moment=late, trading_day=TRADING_DAY, adding=True)
+    assert decision.reason is BlockReason.PAST_ENTRY_CUTOFF
 
 
 # --- the daily loss limit -------------------------------------------------

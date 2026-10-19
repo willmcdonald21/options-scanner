@@ -82,8 +82,16 @@ class RiskGate:
         *,
         moment: datetime | None = None,
         trading_day: date | None = None,
+        adding: bool = False,
     ) -> Decision:
-        """May we open a position in `occ_symbol` right now?"""
+        """May we open a position in `occ_symbol` right now?
+
+        `adding` is an average-down: a deliberate buy that may go into a
+        contract already held. It skips the one-position-per-contract block,
+        and buying more of a held contract does not take a new position slot.
+        Every other limit -- halt, session, cutoff, daily loss, trade count,
+        duplicates -- applies exactly as to any other buy.
+        """
         settings = self.settings
         moment = moment or now_et()
         trading_day = trading_day or today_et()
@@ -127,14 +135,15 @@ class RiskGate:
                 f"already took {entries} of {settings.risk.max_trades_per_day} allowed trades today",
             )
 
-        if self.storage.position_for_symbol(occ_symbol) is not None:
+        held = self.storage.position_for_symbol(occ_symbol) is not None
+        if held and not adding:
             return Decision.block(
                 BlockReason.ALREADY_IN_POSITION,
-                f"already holding {occ_symbol}; the bot does not add to a position",
+                f"already holding {occ_symbol}; send it as an average-down to buy more",
             )
 
         open_count = self.storage.open_position_count()
-        if open_count >= settings.risk.max_open_positions:
+        if not held and open_count >= settings.risk.max_open_positions:
             return Decision.block(
                 BlockReason.MAX_OPEN_POSITIONS,
                 f"{open_count} of {settings.risk.max_open_positions} position slots already in use",
