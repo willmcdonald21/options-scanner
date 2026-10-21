@@ -595,10 +595,13 @@ def runner_level(
     silently -- makes a runner that is up +500% look exactly like a bot that
     has stopped reading quotes.
     """
+    # The contract heads the card and the event sits under it, so a column of
+    # these reads as one contract's story rather than a list of event types.
     note = Notification(
-        title=f"RUNNER +{level_pct}% — {contract_label(option, today)}",
+        title=contract_label(option, today),
         level=Level.SUCCESS,
         description=(
+            f"**RUNNER +{level_pct}%**\n"
             f"The runner reached +{level_pct}%. Nothing sold — {remaining} still running."
         ),
         jump_url=jump_url,

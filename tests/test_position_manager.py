@@ -69,7 +69,9 @@ def titles(notes):
 
 
 def has(notes, needle):
-    return any(needle.lower() in n.title.lower() for n in notes)
+    """Whether any card says `needle`. Title and description both count: the
+    runner and stop cards carry the event under a contract-name title."""
+    return any(needle.lower() in f"{n.title}\n{n.description}".lower() for n in notes)
 
 
 async def enter(pipeline, feed, *, bid=0.47, ask=0.48, message_id=700_001):

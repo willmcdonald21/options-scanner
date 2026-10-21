@@ -252,7 +252,8 @@ def test_the_runner_level_card_names_the_level_and_sells_nothing():
         remaining=4, stop_price=0.79, jump_url=JUMP, today=TODAY,
     )
 
-    assert note.title == "RUNNER +200% — SPX 7815P · 0DTE"
+    assert note.title == "SPX 7815P · 0DTE"
+    assert note.description.splitlines()[0] == "**RUNNER +200%**"
     assert "Nothing sold" in note.description
     assert "4 still running" in note.description
     assert note.level is Level.SUCCESS
