@@ -918,3 +918,98 @@ async def test_the_merged_position_survives_a_restart(storage):
     assert mismatched is False
     assert state.remaining_qty == state.original_qty == 46
     assert state.entry_fill == pytest.approx(MERGED_ENTRY)
+
+
+# --- the P&L channel --------------------------------------------------------
+
+
+def _with_pnl_channel(storage):
+    feed, broker, manager, pipeline, risk = build(storage)
+    cards = []
+
+    async def pnl(note):
+        cards.append(note)
+
+    manager._notify_pnl = pnl
+    return feed, broker, manager, pipeline, risk, cards
+
+
+def _fields(card):
+    return {name: value for name, value, _ in card.fields}
+
+
+async def test_every_trim_posts_one_pnl_card(storage):
+    feed, _, manager, pipeline, _, cards = _with_pnl_channel(storage)
+    await enter(pipeline, feed)  # 21 @ 0.48
+
+    feed.set(0.62)  # +25%: sells 11
+    await manager.poll_once()
+
+    (card,) = cards
+    assert card.title.startswith("TRIM +25%")
+    assert _fields(card) == {"Trade P&L": "+$154.00", "Day P&L": "+$154.00"}  # 11 x 0.14
+
+
+async def test_the_day_total_accumulates_across_sales(storage):
+    feed, _, manager, pipeline, risk, cards = _with_pnl_channel(storage)
+    await enter(pipeline, feed)
+
+    feed.set(0.62)
+    await manager.poll_once()   # +25%: 11 x 0.14 = +154
+    feed.set(0.74)
+    await manager.poll_once()   # +50%: 6 x 0.26 = +156
+
+    assert [c.title.split(" —")[0] for c in cards] == ["TRIM +25%", "TRIM +50%"]
+    assert _fields(cards[1]) == {"Trade P&L": "+$156.00", "Day P&L": "+$310.00"}
+    assert risk.day_summary(TRADING_DAY)["realized_pnl"] == pytest.approx(310.0)
+
+
+async def test_a_stop_out_posts_its_pnl(storage):
+    feed, _, manager, pipeline, _, cards = _with_pnl_channel(storage)
+    await enter(pipeline, feed)
+    feed.set(0.62)
+    await manager.poll_once()   # trim, stop to break-even 0.48
+    feed.set(0.45)
+    await manager.poll_once()
+    feed.set(0.44)
+    await manager.poll_once()   # stopped out
+
+    stop = cards[-1]
+    assert stop.title.startswith("STOPPED OUT")
+    assert _fields(stop)["Trade P&L"].startswith("-$")  # 10 sold under the 0.48 entry
+
+
+async def test_a_flatten_posts_its_pnl(storage):
+    feed, _, manager, pipeline, _, cards = _with_pnl_channel(storage)
+    await enter(pipeline, feed)
+    feed.set(0.50)
+
+    await manager.flatten_all()
+
+    (card,) = cards
+    assert card.title.startswith("FLATTENED")
+
+
+async def test_without_a_pnl_channel_nothing_extra_is_posted(storage):
+    feed, _, manager, pipeline, _ = build(storage)
+    await enter(pipeline, feed)
+
+    feed.set(0.62)
+    notes = await manager.poll_once()
+
+    assert not any(n.title.startswith("TRIM +25%") and "Day P&L" in _fields(n) for n in notes)
+
+
+async def test_a_failing_pnl_post_never_stops_the_exit(storage):
+    feed, broker, manager, pipeline, _ = build(storage)
+
+    async def broken(note):
+        raise RuntimeError("discord is down")
+
+    manager._notify_pnl = broken
+    await enter(pipeline, feed)
+    feed.set(0.62)
+
+    await manager.poll_once()
+
+    assert manager.managed[SPX_OCC].state.remaining_qty == 10  # the trim still happened

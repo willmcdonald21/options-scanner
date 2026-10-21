@@ -38,6 +38,7 @@ from options_scanner.notifier import (
     broker_disconnected,
     broker_reconnected,
     reconciliation,
+    sale_pnl,
     error as error_note,
     near_close_warning,
     phantom_exit,
@@ -134,11 +135,14 @@ class PositionManager:
         broker: Broker,
         *,
         notify=None,
+        notify_pnl=None,
     ):
         self.settings = settings
         self.storage = storage
         self.risk = risk
         self.broker = broker
+        # The P&L channel: one card per sale. None = no P&L cards.
+        self._notify_pnl = notify_pnl
         self._notify = notify
         self.rules: RulesConfig = settings.rules()
         # Which trading day realized P&L is booked against. Injectable so a
@@ -519,9 +523,12 @@ class PositionManager:
         # a partially filled trim has had its chance at this level.
         apply_action(state, Trim(action.level_pct, outcome.filled_qty, action.trigger_price))
         proceeds = outcome.filled_qty * (outcome.avg_price or 0.0) * 100
-        realized = (outcome.avg_price or 0.0) - state.entry_fill
-        managed.realized += realized * outcome.filled_qty * 100
-        self.risk.record_realized(realized * outcome.filled_qty * 100, self.today())
+        await self._book_sale(
+            managed,
+            qty=outcome.filled_qty,
+            fill_price=outcome.avg_price or 0.0,
+            action=f"TRIM +{action.level_pct}%",
+        )
 
         self.storage.record_order(
             occ_symbol=managed.symbol,
@@ -617,9 +624,9 @@ class PositionManager:
         apply_action(state, StopOut(outcome.filled_qty, action.stop_price, action.bid))
         fill_price = outcome.avg_price or 0.0
         realized_per = fill_price - state.entry_fill
-        realized = realized_per * outcome.filled_qty * 100
-        managed.realized += realized
-        self.risk.record_realized(realized, self.today())
+        await self._book_sale(
+            managed, qty=outcome.filled_qty, fill_price=fill_price, action="STOPPED OUT"
+        )
 
         self.storage.record_order(
             occ_symbol=managed.symbol,
@@ -660,6 +667,34 @@ class PositionManager:
 
     # --- flatten -----------------------------------------------------------
 
+    async def _book_sale(
+        self, managed: Managed, *, qty: int, fill_price: float, action: str
+    ) -> float:
+        """Book one sale's realized P&L, and report it to the P&L channel.
+
+        Every sale -- trim, stop-out, flatten -- goes through here, which is
+        what guarantees the P&L channel misses none. Returns the sale's P&L.
+        A failed P&L post is logged and never interrupts the exit itself.
+        """
+        realized = (fill_price - managed.state.entry_fill) * qty * 100
+        managed.realized += realized
+        day = self.today()
+        self.risk.record_realized(realized, day)
+
+        if self._notify_pnl is not None:
+            try:
+                await self._notify_pnl(
+                    sale_pnl(
+                        option=managed.state.option,
+                        action=action,
+                        trade_pnl=realized,
+                        day_pnl=self.risk.day_summary(day)["realized_pnl"],
+                    )
+                )
+            except Exception:
+                logger.exception("P&L card for %s failed to post", managed.symbol)
+        return realized
+
     async def flatten_all(self) -> list[Notification]:
         """Close every managed position now, at a marketable limit."""
         notes: list[Notification] = []
@@ -695,9 +730,9 @@ class PositionManager:
                 continue
 
             fill_price = outcome.avg_price or 0.0
-            realized = (fill_price - managed.state.entry_fill) * outcome.filled_qty * 100
-            managed.realized += realized
-            self.risk.record_realized(realized, self.today())
+            await self._book_sale(
+                managed, qty=outcome.filled_qty, fill_price=fill_price, action="FLATTENED"
+            )
             apply_action(managed.state, StopOut(outcome.filled_qty, fill_price, bid))
             self.storage.record_order(
                 occ_symbol=symbol,
