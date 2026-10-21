@@ -301,6 +301,7 @@ anyone else, and ignores everything in the alerts channel that is not from you.
 | `!status` | Open positions with P&L, peak, current stop, trims done, next rung |
 | `!halt` | Stop opening new positions. **Open positions keep being managed.** |
 | `!resume` | Allow new entries again |
+| `!close NVDA` | Close **one** position now; leaves the rest alone and does not halt entries. `!close QQQ 718P` if a ticker is held twice |
 | `!flatten` | Close everything — asks first; confirm with `!flatten confirm` within 60s |
 | `!eod` | Post the end-of-day summary now |
 
