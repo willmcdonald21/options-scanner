@@ -339,6 +339,24 @@ an entry card is recomputed off **our** fill, not the entry the card advertised,
 and the footer names this bot so a card of ours can never be mistaken for one of
 theirs.
 
+### The P&L channel
+
+Optional. Set `PNL_WEBHOOK_URL` in `.env` to a webhook in its own channel and
+every sale (trim, stop-out or `!flatten`) posts one card there with just two
+numbers:
+
+```
+TRIM +25% — SPY 772C · 0DTE
+Trade P&L      Day P&L
++$44.50        +$106.17
+```
+
+**Trade P&L** is that sale's realized result, measured against the entry. **Day
+P&L** is the day's realized total, the same figure the daily loss limit
+counts. Both are before commissions. Green for a gain, red for a loss, and
+never a ping. If the webhook fails its startup check, P&L cards switch off, a
+warning goes to updates, and trading carries on.
+
 ### Posting transport
 
 Set `UPDATES_WEBHOOK_URL` in `.env` and updates go through that webhook, which
