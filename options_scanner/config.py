@@ -59,9 +59,17 @@ class DiscordSettings(BaseModel):
     # alerts channel and the commands typed in the updates channel.
     updates_webhook_url: str = ""
 
+    # Optional. A separate channel that gets one card per sale: that sale's
+    # P&L and the day's total, nothing else. Blank = no P&L cards.
+    pnl_webhook_url: str = ""
+
     @property
     def posts_via_webhook(self) -> bool:
         return bool(self.updates_webhook_url.strip())
+
+    @property
+    def posts_pnl(self) -> bool:
+        return bool(self.pnl_webhook_url.strip())
 
     @model_validator(mode="after")
     def _channels_must_differ(self) -> "DiscordSettings":
@@ -363,6 +371,10 @@ class Settings(BaseModel):
             from options_scanner.webhook import redact
 
             data["discord"]["updates_webhook_url"] = redact(self.discord.updates_webhook_url)
+        if data["discord"].get("pnl_webhook_url"):
+            from options_scanner.webhook import redact
+
+            data["discord"]["pnl_webhook_url"] = redact(self.discord.pnl_webhook_url)
         return data
 
     def _sizing_summary(self) -> str:
@@ -414,6 +426,7 @@ def _discord_from_env() -> dict[str, Any]:
         "updates_channel_id": int(os.environ["UPDATES_CHANNEL_ID"]),
         "owner_user_id": int(os.environ["OWNER_USER_ID"]),
         "updates_webhook_url": os.environ.get("UPDATES_WEBHOOK_URL", ""),
+        "pnl_webhook_url": os.environ.get("PNL_WEBHOOK_URL", ""),
     }
 
 

@@ -341,3 +341,36 @@ def test_the_summary_names_the_budget_that_actually_sizes(monkeypatch):
     assert "27.2727% below $5,000 equity" in line
     assert "sized as at most $4,000" in line
     assert "contracts <= $3.00" in line
+
+
+# --- the P&L channel --------------------------------------------------------
+
+PNL_HOOK = "https://discord.com/api/webhooks/123456789/secret-token-value"
+
+
+def test_the_pnl_webhook_is_read_from_the_environment(monkeypatch):
+    env(monkeypatch)
+    monkeypatch.setenv("PNL_WEBHOOK_URL", PNL_HOOK)
+
+    settings = load_settings(load_env=False)
+
+    assert settings.discord.posts_pnl
+    assert settings.discord.pnl_webhook_url == PNL_HOOK
+
+
+def test_without_it_there_are_no_pnl_cards(monkeypatch):
+    env(monkeypatch)
+    monkeypatch.delenv("PNL_WEBHOOK_URL", raising=False)
+
+    assert not load_settings(load_env=False).discord.posts_pnl
+
+
+def test_the_pnl_webhook_token_never_reaches_a_log(monkeypatch):
+    """A webhook URL is a bearer credential: anyone holding it can post."""
+    env(monkeypatch)
+    monkeypatch.setenv("PNL_WEBHOOK_URL", PNL_HOOK)
+
+    dumped = load_settings(load_env=False).redacted()
+
+    assert "secret-token-value" not in str(dumped)
+    assert "123456789" in dumped["discord"]["pnl_webhook_url"]
