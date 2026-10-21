@@ -84,6 +84,7 @@ class SwiftAlertBot(discord.Client):
         self._flatten_pending_until: float = 0.0
         self._manager_task: asyncio.Task | None = None
         self._ready_once = False
+        self._pnl_startup_problem: str | None = None
 
         # Posting transport. A webhook needs no channel permissions, so the
         # bot's role can be misconfigured without silencing its reporting --
@@ -94,6 +95,14 @@ class SwiftAlertBot(discord.Client):
                 settings.discord.updates_webhook_url,
                 owner_user_id=settings.discord.owner_user_id,
             )
+
+        # The P&L channel: one card per sale. Optional, and never pings --
+        # no owner id is passed, so not even a losing sale mentions anyone.
+        self._pnl_webhook: WebhookNotifier | None = None
+        if settings.discord.posts_pnl:
+            self._pnl_webhook = WebhookNotifier(settings.discord.pnl_webhook_url)
+            if manager is not None:
+                manager._notify_pnl = self.post_pnl
 
     # --- startup -----------------------------------------------------------
 
@@ -123,6 +132,17 @@ class SwiftAlertBot(discord.Client):
         )
         if self.storage.is_halted():
             await self.post(halted(reason=self.storage.halt_reason() or "halted before restart"))
+        if self._pnl_startup_problem:
+            await self.post(
+                Notification(
+                    title="P&L channel is off",
+                    level=Level.WARNING,
+                    description=(
+                        f"{self._pnl_startup_problem}\nTrading is unaffected; sales are still "
+                        "reported here. Fix PNL_WEBHOOK_URL in .env and restart to turn it back on."
+                    ),
+                )
+            )
 
         # Connect before reconciling: reconciliation compares against the
         # broker, so doing it on a dead session would report every position as
@@ -159,6 +179,8 @@ class SwiftAlertBot(discord.Client):
             self._manager_task.cancel()
         if self._webhook is not None:
             await self._webhook.close()
+        if self._pnl_webhook is not None:
+            await self._pnl_webhook.close()
         await super().close()
 
     async def _verify_channels(self) -> None:
@@ -218,6 +240,32 @@ class SwiftAlertBot(discord.Client):
         self._updates_channel = updates
         logger.info("channel checks passed (alerts=%s updates=%s)", alerts_id, updates_id)
 
+        await self._check_pnl_webhook()
+
+    async def _check_pnl_webhook(self) -> None:
+        """Prove the P&L webhook works, or switch P&L cards off.
+
+        Not fatal, unlike the updates checks: the P&L channel is a report,
+        not a safety mechanism. A broken one is said out loud in updates
+        (after the startup card) and switched off, and trading carries on.
+        """
+        if self._pnl_webhook is None:
+            return
+        try:
+            info = await self._pnl_webhook.validate()
+        except WebhookError as exc:
+            logger.error("P&L webhook unusable, P&L cards are off: %s", exc)
+            await self._pnl_webhook.close()
+            self._pnl_webhook = None
+            if self.manager is not None:
+                self.manager._notify_pnl = None
+            self._pnl_startup_problem = str(exc)
+            return
+        logger.info(
+            "P&L cards via webhook %s (channel %s)",
+            redact(self.settings.discord.pnl_webhook_url), info.get("channel_id"),
+        )
+
     async def _fetch(self, channel_id: int):
         try:
             return await self.fetch_channel(channel_id)
@@ -226,6 +274,15 @@ class SwiftAlertBot(discord.Client):
             return None
 
     # --- posting -----------------------------------------------------------
+
+    async def post_pnl(self, note: Notification) -> None:
+        """Send one sale's P&L card to the P&L channel."""
+        logger.info("pnl: %s", note.to_text())
+        if self._pnl_webhook is None:
+            return
+        if self.pipeline.dry_run and not note.title.startswith("[DRY RUN]"):
+            note = replace(note, title=f"[DRY RUN] {note.title}")
+        await self._pnl_webhook.post(note)
 
     async def post(self, note: Notification) -> None:
         """Send one notification to the updates channel, never anywhere else."""
