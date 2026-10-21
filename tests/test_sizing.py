@@ -294,3 +294,45 @@ def test_the_sizing_note_omits_sized_as_when_nothing_was_capped():
     )
 
     assert "sized as" not in note
+
+
+# --- a small-account budget that scales with the account -----------------
+
+PCT = dict(
+    unit_pct=3.0,
+    small_account_below=5_000.0,
+    small_account_budget_usd=300.0,
+    small_account_budget_pct=27.2727,
+    ceiling_usd=1_100.0,
+)
+
+
+def test_a_percentage_budget_is_exactly_300_on_the_live_account():
+    """Rounded to the cent. Unrounded it is $299.997, which buys one fewer
+    $0.75 contract than $300 does."""
+    budget = trade_budget(1_100.0, **PCT)
+
+    assert budget.cap_usd == 300.00
+    assert compute_contracts(0.75, budget.cap_usd) == 4
+
+
+def test_on_a_4000_account_each_call_buys_several_contracts():
+    budget = trade_budget(4_000.0, **PCT)
+
+    assert budget.cap_usd == pytest.approx(1_090.91)
+    assert [compute_contracts(p, budget.cap_usd) for p in (3.00, 2.18, 1.00, 0.50)] == [3, 5, 10, 21]
+
+
+def test_the_tiers_scale_a_percentage_budget_too():
+    assert trade_budget(4_000.0, "lotto", **PCT).cap_usd == pytest.approx(545.455)
+    assert trade_budget(4_000.0, "super_lotto", **PCT).cap_usd == pytest.approx(272.7275)
+
+
+def test_the_fixed_dollar_budget_is_used_when_no_percentage_is_set():
+    budget = trade_budget(4_000.0, **{**PCT, "small_account_budget_pct": None})
+
+    assert budget.cap_usd == 300.0
+
+
+def test_the_budget_reports_one_normal_trades_base():
+    assert trade_budget(4_000.0, "super_lotto", **PCT).base_usd == pytest.approx(1_090.91)

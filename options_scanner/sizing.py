@@ -96,6 +96,7 @@ class Budget:
     basis: Basis
     sizing_equity: float    # the equity the budget was computed from
     real_equity: float      # what the account actually reports
+    base_usd: float = 0.0   # one normal trade's budget, before the tier and ceiling
 
 
 def sizing_equity(equity: float, max_sizing_equity: float | None = None) -> float:
@@ -119,6 +120,7 @@ def trade_budget(
     unit_pct: float,
     small_account_below: float,
     small_account_budget_usd: float,
+    small_account_budget_pct: float | None = None,
     lotto_multiplier: float = 0.5,
     super_lotto_multiplier: float = 0.25,
     ceiling_usd: float | None = None,
@@ -128,9 +130,15 @@ def trade_budget(
 
     Below `small_account_below` a percent of equity cannot buy a contract --
     3% of $1,100 is $33, and the cheapest alerts cost ~$50 a contract -- so a
-    fixed `small_account_budget_usd` is used instead. At or above it, the
-    guide's percent-of-equity unit. The tier multiplier applies either way,
-    and `ceiling_usd` caps the result.
+    small-account budget is used instead: `small_account_budget_pct` of the
+    sizing equity when set, so it scales with the account, otherwise the fixed
+    `small_account_budget_usd`. At or above it, the guide's percent-of-equity
+    unit. The tier multiplier applies either way, and `ceiling_usd` caps the
+    result.
+
+    A percentage budget is rounded to the cent, so 27.2727% of $1,100 is
+    exactly $300.00 -- unrounded it is $299.997, which buys one fewer $0.75
+    contract than $300 does.
     """
     if equity <= 0:
         raise ValueError(f"equity must be positive, got {equity}")
@@ -143,12 +151,22 @@ def trade_budget(
     )
 
     if sized < small_account_below:
-        cap = small_account_budget_usd * multiplier
+        if small_account_budget_pct is not None:
+            if not 0 < small_account_budget_pct <= 100:
+                raise ValueError(
+                    f"small_account_budget_pct must be in (0, 100], got {small_account_budget_pct}"
+                )
+            base = round(sized * small_account_budget_pct / 100.0, 2)
+        else:
+            base = small_account_budget_usd
+        cap = base * multiplier
         if ceiling_usd is not None:
             if ceiling_usd <= 0:
                 raise ValueError(f"ceiling_usd must be positive, got {ceiling_usd}")
             cap = min(cap, ceiling_usd)
-        return Budget(cap_usd=cap, basis="small_account", sizing_equity=sized, real_equity=equity)
+        return Budget(
+            cap_usd=cap, basis="small_account", sizing_equity=sized, real_equity=equity, base_usd=base
+        )
 
     cap = unit_cap(
         sized,
@@ -158,7 +176,8 @@ def trade_budget(
         super_lotto_multiplier=super_lotto_multiplier,
         ceiling_usd=ceiling_usd,
     )
-    return Budget(cap_usd=cap, basis="unit", sizing_equity=sized, real_equity=equity)
+    base = sized * (unit_pct / 100.0)
+    return Budget(cap_usd=cap, basis="unit", sizing_equity=sized, real_equity=equity, base_usd=base)
 
 
 def affords_one_contract(cap_usd: float, price: float) -> bool:
