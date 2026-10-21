@@ -510,9 +510,9 @@ async def test_the_trim_card_comes_before_the_stop_it_caused(storage):
     feed.set(0.62)  # clears +25%: sells, then promotes the stop to break-even
     notes = await manager.poll_once()
 
-    order = titles(notes)
+    order = [f"{n.title}\n{n.description}" for n in notes]
     trim = next(i for i, t in enumerate(order) if t.startswith("TRIM +25%"))
-    stop = next(i for i, t in enumerate(order) if t.startswith("STOP"))
+    stop = next(i for i, t in enumerate(order) if "**STOP →" in t)
     assert trim < stop
 
 

@@ -535,10 +535,11 @@ def stop_moved(
         ),
         "trail": "Trailing stop ratcheted up with a new peak.",
     }.get(reason, reason)
+    # Same layout as the runner card: the contract heads it, the event under.
     note = Notification(
-        title=f"STOP → {price(new)} — {contract_label(option, today)}",
+        title=contract_label(option, today),
         level=Level.SUCCESS,
-        description=explanation,
+        description=f"**STOP → {price(new)}**\n{explanation}",
         jump_url=jump_url,
     )
     note.add("Stop", f"{was} → {price(new)}")

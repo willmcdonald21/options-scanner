@@ -280,10 +280,11 @@ def test_the_exit_card_reads_like_a_sold_all_card():
     assert values["Peak"] == "+191.7% ($1.40)"
 
 
-def test_the_stop_card_names_the_level_in_its_title():
+def test_the_stop_card_is_headed_by_the_contract_with_the_level_under_it():
     note = stop_moved(option=OPT, old=0.48, new=0.62, reason="trail", remaining=8, today=TODAY)
 
-    assert note.title == "STOP → $0.62 — SPX 7815P · 0DTE"
+    assert note.title == "SPX 7815P · 0DTE"
+    assert note.description.splitlines()[0] == "**STOP → $0.62**"
     assert "ratcheted" in note.description
 
 
