@@ -25,6 +25,7 @@ import discord
 
 from options_scanner.config import Mode, Settings
 from options_scanner.market_hours import describe as describe_session
+from options_scanner.models import OptionKey
 from options_scanner.notifier import (
     REACTION_RECEIVED,
     Level,
@@ -47,6 +48,33 @@ from options_scanner.webhook import WebhookError, WebhookNotifier, redact
 logger = logging.getLogger("options_scanner.discord")
 
 COMMAND_PREFIX = "!"
+
+
+def match_positions(args: list[str], options: dict[str, OptionKey]) -> list[str]:
+    """The open positions `!close` arguments refer to.
+
+    `NVDA` matches every NVDA contract held; `QQQ 718P` narrows to that strike
+    and right; the full OCC symbol (`NVDA  261021C00220000`, which arrives
+    split in two) matches exactly. Returns every match, so the caller can
+    refuse to guess when there is more than one.
+    """
+    if not args:
+        return []
+    joined = "".join(args).upper().lstrip("$")
+    ticker = args[0].upper().lstrip("$")
+    exact = [symbol for symbol in options if symbol.replace(" ", "") == joined]
+    if exact:
+        return exact
+
+    matches = [symbol for symbol, option in options.items() if option.ticker.upper() == ticker]
+    if len(args) > 1:
+        wanted = args[1].upper()
+        matches = [
+            symbol
+            for symbol in matches
+            if f"{options[symbol].strike:g}{options[symbol].right}" == wanted
+        ]
+    return matches
 FLATTEN_CONFIRM_SECONDS = 60
 
 
@@ -361,6 +389,7 @@ class SwiftAlertBot(discord.Client):
             "halt": self._cmd_halt,
             "resume": self._cmd_resume,
             "flatten": self._cmd_flatten,
+            "close": self._cmd_close,
             "eod": self._cmd_eod,
         }
         handler = handlers.get(command)
@@ -369,7 +398,7 @@ class SwiftAlertBot(discord.Client):
                 Notification(
                     title=f"Unknown command `!{command}`",
                     level=Level.INFO,
-                    description="Available: `!status` `!halt` `!resume` `!flatten` `!eod`",
+                    description="Available: `!status` `!halt` `!resume` `!close` `!flatten` `!eod`",
                 )
             )
             return
@@ -458,6 +487,71 @@ class SwiftAlertBot(discord.Client):
             )
         )
         for note in await self.manager.flatten_all():
+            await self.post(note)
+
+    async def _cmd_close(self, args: list[str]) -> None:
+        """Close ONE position: `!close NVDA`, or `!close QQQ 718P`.
+
+        One step, unlike !flatten: naming the position is the confirmation,
+        and on an expiry afternoon speed matters. It does not halt entries --
+        closing one position is not a stop-trading signal, and the slot it
+        frees should be usable.
+        """
+        if self.manager is None:
+            await self.post(
+                Notification(title="Nothing to close", level=Level.WARNING,
+                             description="There is no position manager running.")
+            )
+            return
+        options = {symbol: m.state.option for symbol, m in self.manager.managed.items()}
+        held = "\n".join(f"`{symbol}`" for symbol in options) or "nothing"
+
+        if not args:
+            await self.post(
+                Notification(
+                    title="Usage: `!close NVDA`",
+                    level=Level.INFO,
+                    description="Or `!close QQQ 718P` when two contracts share a ticker.",
+                    fields=[("Open", held, False)],
+                )
+            )
+            return
+
+        matches = match_positions(args, options)
+        target = " ".join(args)
+        if not matches:
+            await self.post(
+                Notification(
+                    title=f"No open position matches `{target}`",
+                    level=Level.WARNING,
+                    description="Nothing was closed.",
+                    fields=[("Open", held, False)],
+                )
+            )
+            return
+        if len(matches) > 1:
+            choices = " or ".join(
+                f"`!close {options[m].ticker} {options[m].strike:g}{options[m].right}`"
+                for m in matches
+            )
+            await self.post(
+                Notification(
+                    title=f"`{target}` matches {len(matches)} positions",
+                    level=Level.WARNING,
+                    description=f"Nothing was closed. Say which: {choices}",
+                )
+            )
+            return
+
+        (symbol,) = matches
+        await self.post(
+            Notification(
+                title=f"Closing `{symbol}`",
+                level=Level.INFO,
+                description="At a marketable limit now. Every other position is left alone.",
+            )
+        )
+        for note in await self.manager.close_position(symbol, action="CLOSED"):
             await self.post(note)
 
     async def _cmd_eod(self, args: list[str]) -> None:
