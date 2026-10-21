@@ -375,3 +375,41 @@ def test_an_average_down_parse_card_says_so():
     )
 
     assert note.title.startswith("PARSED (AVG DOWN)")
+
+
+# --- the P&L channel ------------------------------------------------------
+
+from options_scanner.notifier import sale_pnl, signed_money  # noqa: E402
+
+
+def test_a_sale_card_carries_only_the_trade_and_the_day():
+    note = sale_pnl(option=OPT, action="TRIM +25%", trade_pnl=44.50, day_pnl=106.17, today=TODAY)
+
+    assert note.title == "TRIM +25% — SPX 7815P · 0DTE"
+    assert [(name, value) for name, value, _ in note.fields] == [
+        ("Trade P&L", "+$44.50"),
+        ("Day P&L", "+$106.17"),
+    ]
+    assert note.description == ""
+
+
+def test_a_winning_sale_is_green_and_a_losing_one_red():
+    win = sale_pnl(option=OPT, action="TRIM +25%", trade_pnl=10.0, day_pnl=10.0, today=TODAY)
+    loss = sale_pnl(option=OPT, action="STOPPED OUT", trade_pnl=-118.0, day_pnl=-11.83, today=TODAY)
+
+    assert win.to_webhook_embed()["color"] == COLOR_GREEN
+    assert loss.to_webhook_embed()["color"] == COLOR_RED
+    assert ("Trade P&L", "-$118.00", True) in loss.fields
+
+
+def test_a_losing_sale_never_pings():
+    """Red, but routine. Only errors and criticals mention the owner."""
+    loss = sale_pnl(option=OPT, action="STOPPED OUT", trade_pnl=-500.0, day_pnl=-500.0, today=TODAY)
+
+    assert not loss.mentions_owner
+
+
+def test_signed_money_always_carries_a_sign():
+    assert signed_money(0.0) == "+$0.00"
+    assert signed_money(1234.5) == "+$1,234.50"
+    assert signed_money(-7.25) == "-$7.25"

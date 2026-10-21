@@ -78,6 +78,9 @@ class Notification:
     fields: list[tuple[str, str, bool]] = field(default_factory=list)
     jump_url: str | None = None
     footer: str = ""
+    # Overrides the level's colour without changing who gets pinged. A losing
+    # sale is red but routine; only ERROR/CRITICAL levels mention the owner.
+    color: int | None = None
 
     def add(self, name: str, value: Any, inline: bool = True) -> "Notification":
         self.fields.append((name, str(value), inline))
@@ -94,7 +97,9 @@ class Notification:
         import discord
 
         title = f"[DRY RUN] {self.title}" if dry_run else self.title
-        embed = discord.Embed(title=title, description=self.description, color=self.level.color)
+        embed = discord.Embed(
+            title=title, description=self.description, color=self.color or self.level.color
+        )
         for name, value, inline in self.fields:
             embed.add_field(name=name, value=value or "​", inline=inline)
         if self.jump_url:
@@ -107,7 +112,7 @@ class Notification:
         """The same card as a raw Discord webhook payload. Webhooks take plain
         JSON rather than a discord.Embed, so this is built by hand and the
         module stays importable without discord.py."""
-        embed: dict = {"title": self.title, "color": self.level.color}
+        embed: dict = {"title": self.title, "color": self.color or self.level.color}
         if self.description:
             embed["description"] = self.description
         fields = [
@@ -191,6 +196,11 @@ def price(value: float) -> str:
             text = text[:-1]
         return f"${text}"
     return f"${value + 1e-9:.2f}"
+
+
+def signed_money(value: float) -> str:
+    """"+$44.50" / "-$12.00" -- P&L always carries its sign."""
+    return f"+{money(value)}" if value >= 0 else money(value)
 
 
 def signed_pct(value: float) -> str:
@@ -426,6 +436,32 @@ def averaged_down(
     if levels:
         note.add("Trim Targets (new avg)", ladder_block(levels), inline=False)
     return note
+
+
+def sale_pnl(
+    *,
+    option: OptionKey,
+    action: str,
+    trade_pnl: float,
+    day_pnl: float,
+    today: date | None = None,
+) -> Notification:
+    """For the P&L channel: one card per sale, carrying only that sale's
+    realized P&L and the day's realized total. `action` names what sold, e.g.
+    "TRIM +25%", "STOPPED OUT", "FLATTENED".
+
+    Green for a gain, red for a loss -- but never a ping: a losing sale is
+    routine, and pinging on it would train the ping to be ignored.
+    """
+    return Notification(
+        title=f"{action} — {contract_label(option, today)}",
+        level=Level.SUCCESS if trade_pnl >= 0 else Level.INFO,
+        color=COLOR_GREEN if trade_pnl >= 0 else COLOR_RED,
+        fields=[
+            ("Trade P&L", signed_money(trade_pnl), True),
+            ("Day P&L", signed_money(day_pnl), True),
+        ],
+    )
 
 
 def partial_fill(
