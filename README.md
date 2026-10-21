@@ -74,9 +74,9 @@ buys more.
 | `ask_above_cap` | ask more than **10% above** the alert price — not chasing |
 | `price_mismatch` | alerts with no trim targets (one-line, or a card without them): ask more than **25% below**, or no ask |
 | `contract_too_expensive` | alert price above **$3.00**; the walk never pays more either |
-| `budget_too_small` | the budget can't buy one contract: $300, **$150 lotto**, **$75 super lotto** |
+| `budget_too_small` | the budget can't buy one contract: a lotto gets **half** a trade's budget, a super lotto **a quarter** |
 | market / cutoff | outside 9:30–16:00 ET; **no new entries after 15:30** |
-| limits | **2 open positions**, **$400 lost** today, or **10 trades** today |
+| limits | **2 different contracts** already open, or the **daily loss limit** reached. There is no cap on the number of trades. |
 | `duplicate_alert` | same contract at the same price within **15 minutes** |
 | `contract_not_found` | IBKR does not list the contract |
 
@@ -124,12 +124,26 @@ This is also why the multiplier tightens at the high levels.
 
 #### Sizing
 
-| | |
-|---|---|
-| One unit | `risk.unit_pct_of_account`% of live net liquidation (default 3%) |
-| Lotto | half a unit |
-| Super lotto | a quarter |
-| Ceiling | `risk.max_usd_per_trade`, applied **after** the percentage |
+Every money limit is a **formula of the account**, so one config serves both
+the live options account and the paper rehearsal:
+
+| | Formula | Live ($1,100) | Paper ($4,000) |
+|---|---|---|---|
+| Per trade (under $5,000) | 27.27% of the account | $300 | $1,090.91 |
+| Contracts open at once | 55% of the account ÷ one trade | 2 | 2 |
+| Daily loss limit | 36.36% of the account | $400 | $1,454.54 |
+| Trades per day | — | no cap | no cap |
+| Lotto / super lotto | half / a quarter of a trade | $150 / $75 | $545 / $273 |
+
+**Paper sizes as a $4,000 account** (`risk.paper_equity`), so each call buys
+several contracts and the trims and stops get exercised: $2.18 buys 5, $1.00
+buys 10. The paper account is shared with warrior_bot and holds far more, so
+it has to be told what it is rehearsing. **Live never uses `paper_equity`**; it
+always sizes off its real balance.
+
+At or above $5,000 the guide's unit takes over: `risk.unit_pct_of_account`%
+(3%) per trade, with `risk.max_usd_per_trade` as an absolute ceiling on any one
+trade.
 
 The tier is read off the card — the advisor writes `Lotto Trade — RISKY` as a
 description line. **It is sometimes said only in chat** ("Super lotto size
@@ -196,17 +210,18 @@ committed — secrets are never read from it, even if you paste them there.
 The settings most worth reading before a first run:
 
 ```yaml
-mode: dry_run                     # dry_run | paper | live
+mode: paper                       # dry_run | paper | live
 risk:
-  unit_pct_of_account: 3.0        # one unit, as a percent of net liquidation
+  paper_equity: 4000              # paper only: rehearse this account size
+  small_account_budget_pct: 27.2727   # per trade below $5,000 ($300 on $1,100)
+  max_contract_price: 3.00        # skip dearer contracts
+  max_deployed_pct: 55            # contracts open = account x 55% / one trade
+  max_daily_loss_pct: 36.3636     # halts new entries ($400 on $1,100)
+  max_trades_per_day: null        # no cap
+  max_usd_per_trade: 1100         # absolute ceiling on one trade
+  unit_pct_of_account: 3.0        # at or above $5,000
   lotto_multiplier: 0.5           # "lotto = half"
   super_lotto_multiplier: 0.25    # "super lotto = a quarter"
-  fallback_equity: 32000          # dry_run only; a live read failure skips
-  max_usd_per_trade: 1000         # absolute ceiling, applied after the percent
-  max_contracts_per_trade: 50     # set to 1 for the first live sessions
-  max_open_positions: 3
-  max_daily_loss_usd: 1000        # auto-halts entries when breached
-  max_trades_per_day: 10
 market:
   entry_cutoff: "15:30"           # no new entries after this (ET)
   force_exit_enabled: false       # off: a runner can expire worthless
@@ -442,8 +457,8 @@ missing and raises a false alarm.
 | **warrior_bot flattening our options** | its reconciliation walks *every* account position every 30s and flattens anything with no resting stop. Our stops are synthetic, so it sees "uncovered". | a `secType == "STK"` filter in warrior_bot, plus an account filter. `doctor` checks the filter is present **and** that the running process is newer than it — a process started before the patch is still running the old code. |
 | Client ID collision | IBKR refuses the second connection outright | warrior 11, scanner 12, its scripts 111/161, the probe 19. `doctor` compares them. |
 | `reqGlobalCancel()` | took no account argument, so it cancelled everything the login could see — including our working entry limits | **replaced** in warrior_bot with cancelling its own account's orders one at a time. `doctor` fails if the call ever comes back. |
-| Market-data lines | warrior self-caps at 90; IBKR's default is 100 | we add at most `max_open_positions`. `doctor` warns if the total would exceed 100. |
-| Buying power | shared | the scanner risks at most `max_open_positions × max_usd_per_trade`, since the ceiling binds whatever the percentage says |
+| Market-data lines | warrior self-caps at 90; IBKR's default is 100 | we add at most one per open contract (2, from the position formula). `doctor` warns if the total would exceed 100. |
+| Buying power | shared | the scanner uses at most about 55% of the account it is sized as (`max_deployed_pct`) |
 | Mac sleep | a sleeping Mac has no synthetic stop | `sudo pmset -c sleep 0 disksleep 0`. `doctor` fails if it is not 0. |
 | Gateway dropping | the stop silently stops working | enable **Auto restart** (not Auto logoff) in Configure → Settings → Lock and Exit. `doctor` reads Gateway's own log to tell you whether it is enabled. |
 
