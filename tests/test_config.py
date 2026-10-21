@@ -208,7 +208,12 @@ def test_a_bad_force_exit_time_also_fails_early():
         ("risk", {"lotto_multiplier": 0}),
         ("risk", {"super_lotto_multiplier": 1.5}),
         ("risk", {"fallback_equity": 0}),
-        ("risk", {"max_sizing_equity": 0}),
+        ("risk", {"paper_equity": 0}),
+        ("risk", {"small_account_budget_pct": 0}),
+        ("risk", {"small_account_budget_pct": 101}),
+        ("risk", {"max_deployed_pct": 0}),
+        ("risk", {"max_daily_loss_pct": 150}),
+        ("risk", {"max_trades_per_day": 0}),
         ("risk", {"small_account_below": -1}),
         ("risk", {"small_account_budget_usd": 0}),
         ("risk", {"max_contract_price": 0}),
@@ -261,35 +266,78 @@ def test_the_confirmation_window_is_shared_with_the_rules_engine():
 
 
 
-def test_the_committed_config_is_sized_for_the_small_live_account(monkeypatch):
-    """The numbers the user chose for the ~$1,100 options account. A change to
-    any of these changes how much money is at risk, so it should show up as a
-    failing test, not a quiet diff."""
-    env(monkeypatch)
-    risk = load_settings(load_env=False).risk
+def _limits_at(settings, equity, *, live=False):
+    from options_scanner.risk import derive_limits
+    from options_scanner.sizing import trade_budget
 
-    assert risk.max_sizing_equity == 1100
-    assert risk.small_account_below == 5000
-    assert risk.small_account_budget_usd == 300
-    assert risk.max_contract_price == 3.00
-    assert risk.max_usd_per_trade == 300
-    assert risk.max_open_positions == 2
-    assert risk.max_daily_loss_usd == 400
+    r = settings.risk
+    budget = trade_budget(
+        equity, "normal", unit_pct=r.unit_pct_of_account, small_account_below=r.small_account_below,
+        small_account_budget_usd=r.small_account_budget_usd,
+        small_account_budget_pct=r.small_account_budget_pct, ceiling_usd=r.max_usd_per_trade,
+        max_sizing_equity=None if live else settings.sizing_cap(),
+    )
+    return budget, derive_limits(settings, budget.sizing_equity)
+
+
+def test_the_committed_config_keeps_the_live_account_where_it_was(monkeypatch):
+    """The numbers the user chose for the ~$1,100 live options account: $300 a
+    trade, 2 open, $400 daily loss. Now formulas -- this pins that they still
+    come out the same. A change here changes how much money is at risk, so it
+    must fail a test rather than pass as a quiet diff."""
+    env(monkeypatch)
+    settings = load_settings(load_env=False)
+
+    budget, limits = _limits_at(settings, 1_100.0, live=True)
+
+    assert budget.cap_usd == 300.00
+    assert limits.max_open_positions == 2
+    assert limits.max_daily_loss_usd == 400.00
+    assert limits.max_trades_per_day is None
+    assert settings.risk.max_contract_price == 3.00
+
+
+def test_the_committed_config_rehearses_a_4000_account_on_paper(monkeypatch):
+    """Paper only: sized as $4,000, so each call buys several contracts and
+    the 50% / 25% trims and the stops get exercised."""
+    env(monkeypatch)
+    settings = load_settings(load_env=False)
+    assert settings.mode is Mode.PAPER
+
+    budget, limits = _limits_at(settings, 32_334.98)  # the real paper balance
+
+    assert budget.sizing_equity == 4_000.0
+    assert budget.cap_usd == pytest.approx(1_090.91)
+    assert limits.max_open_positions == 2
+    assert limits.max_daily_loss_usd == pytest.approx(1_454.54)
+    assert limits.max_trades_per_day is None
+
+
+def test_paper_equity_never_applies_in_live(monkeypatch):
+    env(monkeypatch)
+    settings = load_settings(load_env=False)
+    live = settings.model_copy(update={"mode": Mode.LIVE})
+
+    assert settings.sizing_cap() == 4_000.0
+    assert live.sizing_cap() is None
 
 
 def test_the_new_sizing_limits_are_off_unless_configured():
     risk = make_settings().risk
 
-    assert risk.max_sizing_equity is None
+    assert risk.paper_equity is None
     assert risk.max_contract_price is None
+    assert risk.small_account_budget_pct is None
+    assert risk.max_deployed_pct is None
+    assert risk.max_daily_loss_pct is None
 
 
 def test_the_summary_names_the_budget_that_actually_sizes(monkeypatch):
-    """On the ~$1,100 account the $300 budget sizes every trade. A startup
-    card saying only "3% of equity" read as a $33 trade."""
+    """A startup card saying only "3% of equity" read as a $33 trade on the
+    live account."""
     env(monkeypatch)
     line = load_settings(load_env=False).summary_line()
 
-    assert "$300 below $5,000 equity" in line
-    assert "sized as at most $1,100" in line
+    assert "27.2727% below $5,000 equity" in line
+    assert "sized as at most $4,000" in line
     assert "contracts <= $3.00" in line

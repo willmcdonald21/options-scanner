@@ -283,3 +283,79 @@ def test_the_day_summary_reports_every_counter(storage):
         "alerts_rejected": 1,
         "alerts_skipped": 2,
     }
+
+
+# --- limits that scale with the account -----------------------------------
+
+from options_scanner.risk import derive_limits  # noqa: E402
+
+FORMULAS = {
+    "small_account_budget_pct": 27.2727,
+    "max_usd_per_trade": 1_100,
+    "max_deployed_pct": 55,
+    "max_daily_loss_pct": 36.3636,
+    "max_trades_per_day": None,
+}
+
+
+@pytest.mark.parametrize(
+    "equity,positions,loss",
+    [
+        (1_100.0, 2, 400.00),    # the live account, unchanged
+        (4_000.0, 2, 1_454.54),  # the paper rehearsal
+        (600.0, 2, 218.18),      # both are percentages, so 55 / 27.27 = 2 at any size
+    ],
+)
+def test_the_limits_follow_the_account(equity, positions, loss):
+    limits = derive_limits(make_settings(risk=FORMULAS), equity)
+
+    assert limits.max_open_positions == positions
+    assert limits.max_daily_loss_usd == pytest.approx(loss)
+    assert limits.max_trades_per_day is None
+
+
+def test_never_fewer_than_one_position():
+    """A fixed $300 budget on a $400 account: 55% is $220, under one trade."""
+    settings = make_settings(risk={**FORMULAS, "small_account_budget_pct": None})
+
+    assert derive_limits(settings, 400.0).max_open_positions == 1
+
+
+def test_without_formulas_the_fixed_limits_apply():
+    limits = derive_limits(make_settings(risk={"max_open_positions": 4, "max_daily_loss_usd": 250}), 4_000.0)
+
+    assert limits.max_open_positions == 4
+    assert limits.max_daily_loss_usd == 250
+
+
+def test_with_no_trade_cap_only_the_loss_limit_stops_entries(storage):
+    g = gate(storage, risk=FORMULAS, mode="paper")
+    storage.bump_day(TRADING_DAY, entries=500)
+
+    assert check(g).allowed
+
+
+def test_the_paper_gate_uses_the_paper_equity_from_the_start(storage):
+    """Before any alert has read equity, paper already knows it is $4,000."""
+    g = gate(storage, risk={**FORMULAS, "paper_equity": 4_000.0}, mode="paper")
+
+    assert g.limits().max_daily_loss_usd == pytest.approx(1_454.54)
+
+
+def test_the_loss_limit_halts_at_the_scaled_figure(storage):
+    g = gate(storage, risk={**FORMULAS, "paper_equity": 4_000.0}, mode="paper")
+
+    g.record_realized(-1_000.0, TRADING_DAY)
+    assert not g.halted  # $400 would have halted; $1,454.54 does not
+
+    g.record_realized(-500.0, TRADING_DAY)
+    assert g.halted
+
+
+def test_the_limits_follow_the_equity_the_pipeline_last_saw(storage):
+    g = gate(storage, risk=FORMULAS, mode="paper")
+
+    g.observe_equity(1_100.0)
+    assert g.limits().max_daily_loss_usd == pytest.approx(400.0)
+    g.observe_equity(4_000.0)
+    assert g.limits().max_daily_loss_usd == pytest.approx(1_454.54)

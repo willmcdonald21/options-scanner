@@ -525,6 +525,7 @@ class AlertPipeline:
             return
         budget, equity_is_assumed = sized
         cap_usd = budget.cap_usd
+        self.risk.observe_equity(budget.sizing_equity)
         size_note = sizing_note(
             equity=budget.real_equity,
             unit_pct=settings.risk.unit_pct_of_account,
@@ -532,7 +533,7 @@ class AlertPipeline:
             cap_usd=cap_usd,
             equity_is_assumed=equity_is_assumed,
             basis=budget.basis,
-            small_account_budget_usd=settings.risk.small_account_budget_usd,
+            small_account_budget_usd=budget.base_usd,
             sized_as=budget.sizing_equity,
         )
 
@@ -852,10 +853,11 @@ class AlertPipeline:
             unit_pct=risk.unit_pct_of_account,
             small_account_below=risk.small_account_below,
             small_account_budget_usd=risk.small_account_budget_usd,
+            small_account_budget_pct=risk.small_account_budget_pct,
             lotto_multiplier=risk.lotto_multiplier,
             super_lotto_multiplier=risk.super_lotto_multiplier,
             ceiling_usd=risk.max_usd_per_trade,
-            max_sizing_equity=risk.max_sizing_equity,
+            max_sizing_equity=self.settings.sizing_cap(),
         )
 
     async def _quote(self, spec) -> Quote | None:

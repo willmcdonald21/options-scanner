@@ -24,7 +24,55 @@ from options_scanner.market_hours import (
     now_et,
     today_et,
 )
+from options_scanner.sizing import trade_budget
 from options_scanner.storage import Storage
+
+
+@dataclass(frozen=True)
+class Limits:
+    """The account-size-dependent limits, as they stand for one equity."""
+
+    max_open_positions: int
+    max_daily_loss_usd: float
+    max_trades_per_day: int | None
+    sizing_equity: float
+
+
+def derive_limits(settings: Settings, sizing_equity: float) -> Limits:
+    """Turn the configured formulas into numbers for this account size.
+
+    Positions: floor(equity x max_deployed_pct / one normal trade's budget),
+    at least 1 -- so a bigger account takes more contracts at once rather than
+    the limit staying pinned to the size it was first written for. Daily loss:
+    equity x max_daily_loss_pct. Either falls back to its fixed figure when its
+    percentage is not set.
+    """
+    risk = settings.risk
+    if risk.max_deployed_pct is not None:
+        one_trade = trade_budget(
+            sizing_equity,
+            "normal",
+            unit_pct=risk.unit_pct_of_account,
+            small_account_below=risk.small_account_below,
+            small_account_budget_usd=risk.small_account_budget_usd,
+            small_account_budget_pct=risk.small_account_budget_pct,
+            ceiling_usd=risk.max_usd_per_trade,
+        ).cap_usd
+        positions = max(1, int(sizing_equity * risk.max_deployed_pct / 100.0 / one_trade + 1e-9))
+    else:
+        positions = risk.max_open_positions
+
+    if risk.max_daily_loss_pct is not None:
+        loss = round(sizing_equity * risk.max_daily_loss_pct / 100.0, 2)
+    else:
+        loss = risk.max_daily_loss_usd
+
+    return Limits(
+        max_open_positions=positions,
+        max_daily_loss_usd=loss,
+        max_trades_per_day=risk.max_trades_per_day,
+        sizing_equity=sizing_equity,
+    )
 
 
 class BlockReason(str, Enum):
@@ -60,6 +108,19 @@ class RiskGate:
     def __init__(self, settings: Settings, storage: Storage):
         self.settings = settings
         self.storage = storage
+        # The equity the limits are derived from. Outside live this is the
+        # paper equity from the start. In live it is the conservative fallback
+        # until the first real equity read, which the pipeline reports through
+        # observe_equity() on every alert.
+        self._sizing_equity = settings.sizing_cap() or settings.risk.fallback_equity
+
+    def observe_equity(self, sizing_equity: float) -> None:
+        """Record the equity sizing just used, so the limits follow it."""
+        if sizing_equity > 0:
+            self._sizing_equity = sizing_equity
+
+    def limits(self) -> Limits:
+        return derive_limits(self.settings, self._sizing_equity)
 
     # --- halting -----------------------------------------------------------
 
@@ -119,20 +180,21 @@ class RiskGate:
             )
 
         stats = self.storage.day_stats(trading_day)
+        limits = self.limits()
 
         realized = float(stats["realized_pnl"])
-        if realized <= -abs(settings.risk.max_daily_loss_usd):
+        if realized <= -abs(limits.max_daily_loss_usd):
             return Decision.block(
                 BlockReason.DAILY_LOSS_LIMIT,
                 f"daily loss limit hit: ${realized:,.2f} realized against a "
-                f"${settings.risk.max_daily_loss_usd:,.0f} limit",
+                f"${limits.max_daily_loss_usd:,.0f} limit",
             )
 
         entries = int(stats["entries"])
-        if entries >= settings.risk.max_trades_per_day:
+        if limits.max_trades_per_day is not None and entries >= limits.max_trades_per_day:
             return Decision.block(
                 BlockReason.MAX_TRADES_PER_DAY,
-                f"already took {entries} of {settings.risk.max_trades_per_day} allowed trades today",
+                f"already took {entries} of {limits.max_trades_per_day} allowed trades today",
             )
 
         held = self.storage.position_for_symbol(occ_symbol) is not None
@@ -143,10 +205,10 @@ class RiskGate:
             )
 
         open_count = self.storage.open_position_count()
-        if not held and open_count >= settings.risk.max_open_positions:
+        if not held and open_count >= limits.max_open_positions:
             return Decision.block(
                 BlockReason.MAX_OPEN_POSITIONS,
-                f"{open_count} of {settings.risk.max_open_positions} position slots already in use",
+                f"{open_count} of {limits.max_open_positions} position slots already in use",
             )
 
         duplicate = self.storage.find_recent_duplicate(
@@ -174,7 +236,7 @@ class RiskGate:
         self.storage.bump_day(day, realized_pnl=pnl)
         stats = self.storage.day_stats(day)
         realized = float(stats["realized_pnl"])
-        limit = abs(self.settings.risk.max_daily_loss_usd)
+        limit = abs(self.limits().max_daily_loss_usd)
         if realized <= -limit and not self.halted:
             self.halt(f"daily loss limit: ${realized:,.2f} vs ${limit:,.0f}")
 

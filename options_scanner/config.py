@@ -160,15 +160,19 @@ class RiskSettings(BaseModel):
     # that fails skips the alert rather than sizing off this.
     fallback_equity: float = Field(default=32000.0, gt=0)
 
-    # Size as though the account held at most this much. For the shared paper
-    # account: IBKR allows one paper account per login, so paper testing runs
-    # on a balance far larger than the live options account, and without this
-    # it would trade like a different account. None = size off the real figure.
-    max_sizing_equity: float | None = Field(default=None, gt=0)
+    # Outside live trading, size and limit as though the account held at most
+    # this much. IBKR allows one paper account per login, shared with
+    # warrior_bot and holding far more than the options account, so paper
+    # needs telling what account it is rehearsing. Never applies in live mode,
+    # which always sizes off the real balance. None = the real figure.
+    paper_equity: float | None = Field(default=None, gt=0)
 
     # Below this equity a percent of the account cannot buy a contract, so a
-    # fixed dollar budget is used instead of unit_pct_of_account. 0 disables.
+    # small-account budget is used instead of unit_pct_of_account. 0 disables.
     small_account_below: float = Field(default=5000.0, ge=0)
+    # The small-account budget: a percent of the (sizing) equity when the pct
+    # is set, otherwise the fixed dollar figure.
+    small_account_budget_pct: float | None = Field(default=None, gt=0, le=100)
     small_account_budget_usd: float = Field(default=300.0, gt=0)
 
     # Skip any contract dearer than this, and never let the entry walk pay
@@ -179,9 +183,21 @@ class RiskSettings(BaseModel):
     # cannot quietly produce a huge position.
     max_usd_per_trade: float = Field(default=1000.0, gt=0)
     max_contracts_per_trade: int = Field(default=50, ge=1)
+
+    # Different contracts open at once. With max_deployed_pct set it is a
+    # formula -- floor(equity x pct / one trade's budget), at least 1 -- so it
+    # scales with the account; otherwise the fixed count.
+    max_deployed_pct: float | None = Field(default=None, gt=0, le=100)
     max_open_positions: int = Field(default=3, ge=1)
+
+    # New entries halt for the day once realized losses reach this. A percent
+    # of the (sizing) equity when the pct is set, otherwise the fixed dollars.
+    max_daily_loss_pct: float | None = Field(default=None, gt=0, le=100)
     max_daily_loss_usd: float = Field(default=1000.0, gt=0)
-    max_trades_per_day: int = Field(default=10, ge=1)
+
+    # A cap on entries per day. None = no cap: the daily loss limit is what
+    # stops a bad day.
+    max_trades_per_day: int | None = Field(default=10, ge=1)
 
 
 class MarketSettings(BaseModel):
@@ -313,6 +329,13 @@ class Settings(BaseModel):
         self.rules()
         return self
 
+    def sizing_cap(self) -> float | None:
+        """The ceiling on the equity used for sizing and limits, in this mode.
+        paper_equity applies to paper and dry run, never to live."""
+        if self.mode is Mode.LIVE:
+            return None
+        return self.risk.paper_equity
+
     def rules(self) -> RulesConfig:
         """The config the rules engine actually runs on. Percentages are
         fractions in there and whole numbers here, converted in one place."""
@@ -349,13 +372,16 @@ class Settings(BaseModel):
         risk = self.risk
         unit = f"{risk.unit_pct_of_account:g}% of equity"
         if risk.small_account_below > 0:
-            unit = (
-                f"${risk.small_account_budget_usd:,.0f} below ${risk.small_account_below:,.0f} "
-                f"equity, else {unit}"
+            small = (
+                f"{risk.small_account_budget_pct:g}%"
+                if risk.small_account_budget_pct is not None
+                else f"${risk.small_account_budget_usd:,.0f}"
             )
+            unit = f"{small} below ${risk.small_account_below:,.0f} equity, else {unit}"
         extras = [f"cap ${risk.max_usd_per_trade:,.0f}"]
-        if risk.max_sizing_equity is not None:
-            extras.append(f"sized as at most ${risk.max_sizing_equity:,.0f}")
+        cap = self.sizing_cap()
+        if cap is not None:
+            extras.append(f"sized as at most ${cap:,.0f}")
         if risk.max_contract_price is not None:
             extras.append(f"contracts <= ${risk.max_contract_price:.2f}")
         return f"{unit} ({', '.join(extras)})"

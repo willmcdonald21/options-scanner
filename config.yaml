@@ -64,17 +64,26 @@ stops:
   exit_retries: 3           # then escalate: an exit that won't fill must not stay quiet
 
 risk:
-  # Sized for the ~$1,100 live options account.
+  # Every money limit below is a formula of the account, so one config serves
+  # both the ~$1,100 live options account and the paper rehearsal.
   #
-  # The paper account is shared with warrior_bot (IBKR allows one paper
-  # account per login) and holds far more, so sizing works from at most
-  # max_sizing_equity. Paper then produces the same sizes and skips as live.
-  max_sizing_equity: 1100
+  #                       live ($1,100)     paper ($4,000)
+  #   per trade              $300             $1,090.91
+  #   open at once            2                  2
+  #   daily loss limit       $400             $1,454.54
+  #   trades per day        no cap             no cap
 
-  # Below this, 3% of equity cannot buy a contract ($33 on $1,100), so each
-  # trade gets a fixed budget instead -- targeting $200-300.
+  # PAPER ONLY. The paper account is shared with warrior_bot (IBKR allows one
+  # per login) and holds far more, so paper sizes and limits as though it
+  # held this. Big enough that each call buys several contracts, so the trims
+  # and stops get exercised. Live always uses its real balance.
+  paper_equity: 4000
+
+  # Below this, 3% of equity cannot buy a contract, so each trade gets a
+  # small-account budget instead: this percent of the account. 27.2727% is
+  # exactly $300 on $1,100.
   small_account_below: 5000
-  small_account_budget_usd: 300
+  small_account_budget_pct: 27.2727
 
   # Skip anything dearer than this, and never let the entry walk pay more.
   max_contract_price: 3.00
@@ -84,18 +93,22 @@ risk:
   # apply to either budget. A tier whose budget cannot buy one contract is
   # skipped, never rounded up.
   unit_pct_of_account: 3.0
-  lotto_multiplier: 0.5         # $150 on a $300 budget
-  super_lotto_multiplier: 0.25  # $75
+  lotto_multiplier: 0.5
+  super_lotto_multiplier: 0.25
 
-  # dry_run has no broker to ask for equity. A LIVE equity read that fails
-  # skips the alert instead of falling back to this.
+  # dry_run has no broker to ask for equity, and live uses this until its
+  # first equity read. A LIVE equity read that fails skips the alert.
   fallback_equity: 1100
 
-  max_usd_per_trade: 300        # absolute ceiling on any budget
+  max_usd_per_trade: 1100       # absolute ceiling on any one trade's budget
   max_contracts_per_trade: 50
-  max_open_positions: 2         # up to ~55% of $1,100 deployed
-  max_daily_loss_usd: 400       # halts new entries for the day
-  max_trades_per_day: 10
+
+  # Contracts open at once = floor(account x 55% / one trade's budget).
+  max_deployed_pct: 55
+  # New entries halt for the day at this loss. 36.3636% is exactly $400 on $1,100.
+  max_daily_loss_pct: 36.3636
+  # No cap on trades per day: the daily loss limit is what stops a bad day.
+  max_trades_per_day: null
 
 market:
   entry_cutoff: "15:30"             # no new entries after this (ET)

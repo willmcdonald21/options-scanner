@@ -620,7 +620,7 @@ async def test_a_live_sizing_line_does_not_claim_the_equity_was_assumed(storage)
 # far more. These pin the behaviour the user chose for it.
 
 SMALL_ACCOUNT = {
-    "max_sizing_equity": 1_100.0,
+    "paper_equity": 1_100.0,
     "small_account_below": 5_000.0,
     "small_account_budget_usd": 300.0,
     "max_usd_per_trade": 300.0,
