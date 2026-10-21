@@ -388,7 +388,16 @@ cmd_doctor() {
 
   head_ "Market-data line budget"
   local cap; cap="$(warrior_cfg data_watchdog.max_concurrent_subscriptions 90)"
-  local slots; slots="$(scanner_cfg risk.max_open_positions 3)"
+  # The position limit is a formula of the account size now, so ask the bot's
+  # own code for it rather than reading a fixed number out of the YAML.
+  local slots
+  slots="$(cd "$SCANNER_DIR" && "$PY" -c '
+from options_scanner.config import load_settings
+from options_scanner.risk import RiskGate
+from options_scanner.storage import Storage
+print(RiskGate(load_settings(), Storage(":memory:")).limits().max_open_positions)
+' 2>/dev/null)"
+  [[ "$slots" =~ ^[0-9]+$ ]] || slots=3
   if (( cap + slots > 100 )); then
     warn "warrior caps at $cap subscriptions + scanner needs up to $slots; IBKR's default is 100"
   else
