@@ -408,7 +408,17 @@ class PositionManager:
         if not await self._confirm_still_held(managed, tick):
             return tick
 
-        for action in evaluate(managed.state, price, self.rules):
+        actions = evaluate(managed.state, price, self.rules)
+        # A jump through several runner steps in one quote is one event: every
+        # level it crossed is marked reached, but only the highest is announced.
+        # Five back-to-back "RUNNER" cards for one price move would bury it.
+        top_runner = max(
+            (a.level_pct for a in actions if isinstance(a, RunnerLevel)), default=None
+        )
+        for action in actions:
+            if isinstance(action, RunnerLevel) and action.level_pct != top_runner:
+                apply_action(managed.state, action)
+                continue
             await self._apply(managed, action, tick)
             if managed.state.closed:
                 break

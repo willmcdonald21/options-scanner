@@ -1013,3 +1013,54 @@ async def test_a_failing_pnl_post_never_stops_the_exit(storage):
     await manager.poll_once()
 
     assert manager.managed[SPX_OCC].state.remaining_qty == 10  # the trim still happened
+
+
+# --- a runner card at every +25% -------------------------------------------
+#
+# enter() fills at 0.48, so +125% is 1.08, +150% is 1.20, +175% is 1.32.
+
+
+def _stepped(storage):
+    return build(storage, trim={"runner_levels": [], "runner_step_pct": 25})
+
+
+def _runner_cards(notes):
+    return [n for n in notes if "RUNNER +" in (n.title + n.description)]
+
+
+async def test_every_25_percent_gets_its_own_card(storage):
+    feed, _, manager, pipeline, _ = _stepped(storage)
+    await enter(pipeline, feed)
+
+    seen = []
+    for bid in (0.60, 0.72, 0.84, 0.96, 1.08, 1.20, 1.32):
+        feed.set(bid)
+        seen += _runner_cards(await manager.poll_once())
+
+    assert len(seen) == 5  # +75, +100, +125, +150, +175
+    assert "RUNNER +125%" in (seen[2].title + seen[2].description)
+
+
+async def test_a_jump_through_several_steps_is_one_card(storage):
+    feed, _, manager, pipeline, _ = _stepped(storage)
+    await enter(pipeline, feed)
+    feed.set(0.72)
+    await manager.poll_once()   # the two trims
+
+    feed.set(1.32)              # +175% in one quote: crosses 75 .. 175
+    cards = _runner_cards(await manager.poll_once())
+
+    assert len(cards) == 1
+    assert "RUNNER +175%" in (cards[0].title + cards[0].description)
+    assert {75, 100, 125, 150, 175} <= manager.managed[SPX_OCC].state.fired_levels
+
+
+async def test_the_skipped_steps_are_not_announced_later(storage):
+    feed, _, manager, pipeline, _ = _stepped(storage)
+    await enter(pipeline, feed)
+    feed.set(1.32)
+    await manager.poll_once()
+
+    feed.set(1.10)              # back down through +125%
+    feed.set(1.33)
+    assert _runner_cards(await manager.poll_once()) == []
