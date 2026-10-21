@@ -709,71 +709,79 @@ class PositionManager:
         """Close every managed position now, at a marketable limit."""
         notes: list[Notification] = []
         for symbol in list(self.managed):
-            managed = self.managed.get(symbol)
-            if managed is None:
-                continue
-            quote = None
-            try:
-                quote = await self.broker.get_quote(managed.spec)
-            except BrokerError as exc:
-                logger.warning("no quote to price a flatten of %s: %s", symbol, exc)
-            bid = (quote.bid if quote and quote.bid else None) or managed.state.entry_fill
-            qty = await safe_sell_qty(self.broker, managed.spec, managed.state.remaining_qty)
-            if qty == 0:
-                notes.append(
-                    error_note(
-                        title=f"Nothing to flatten in {symbol}",
-                        detail="The broker reports no position.",
-                    )
-                )
-                self.forget(symbol)
-                continue
+            notes.extend(await self.close_position(symbol, action="FLATTENED"))
+        return notes
 
-            outcome = await self._sell(managed, qty, bid)
-            if not outcome.any_fill:
-                notes.append(
-                    error_note(
-                        title=f"FLATTEN FAILED for {symbol}",
-                        detail=f"{outcome.detail}\nStill open — close it manually.",
-                    )
-                )
-                continue
+    async def close_position(self, symbol: str, *, action: str = "CLOSED") -> list[Notification]:
+        """Close one managed position now, at a marketable limit, and leave
+        every other position exactly as it is.
 
-            fill_price = outcome.avg_price or 0.0
-            await self._book_sale(
-                managed, qty=outcome.filled_qty, fill_price=fill_price, action="FLATTENED"
-            )
-            apply_action(managed.state, StopOut(outcome.filled_qty, fill_price, bid))
-            self.storage.record_order(
-                occ_symbol=symbol,
-                intent="FLATTEN",
-                side="SELL",
+        `action` names the close on the P&L card ("CLOSED" for !close,
+        "FLATTENED" for !flatten) and, as an order intent, in the records.
+        """
+        managed = self.managed.get(symbol)
+        if managed is None:
+            return []
+        intent = "FLATTEN" if action == "FLATTENED" else "CLOSE"
+
+        quote = None
+        try:
+            quote = await self.broker.get_quote(managed.spec)
+        except BrokerError as exc:
+            logger.warning("no quote to price a close of %s: %s", symbol, exc)
+        bid = (quote.bid if quote and quote.bid else None) or managed.state.entry_fill
+        qty = await safe_sell_qty(self.broker, managed.spec, managed.state.remaining_qty)
+        if qty == 0:
+            self.forget(symbol)
+            return [
+                error_note(
+                    title=f"Nothing to close in {symbol}",
+                    detail="The broker reports no position.",
+                )
+            ]
+
+        outcome = await self._sell(managed, qty, bid)
+        if not outcome.any_fill:
+            return [
+                error_note(
+                    title=f"CLOSE FAILED for {symbol}",
+                    detail=f"{outcome.detail}\nStill open — close it manually.",
+                )
+            ]
+
+        fill_price = outcome.avg_price or 0.0
+        await self._book_sale(managed, qty=outcome.filled_qty, fill_price=fill_price, action=action)
+        apply_action(managed.state, StopOut(outcome.filled_qty, fill_price, bid))
+        self.storage.record_order(
+            occ_symbol=symbol,
+            intent=intent,
+            side="SELL",
+            qty=outcome.filled_qty,
+            status=outcome.status,
+            position_id=managed.position_id,
+            limit_price=fill_price,
+        )
+        self.storage.save_position(managed.position_id, managed.state, managed.realized)
+        pnl_pct = (
+            (fill_price - managed.state.entry_fill) / managed.state.entry_fill * 100
+            if managed.state.entry_fill
+            else 0.0
+        )
+        notes = [
+            stopped_out(
+                option=managed.state.option,
                 qty=outcome.filled_qty,
-                status=outcome.status,
-                position_id=managed.position_id,
-                limit_price=fill_price,
+                stop_price=fill_price,
+                fill_price=fill_price,
+                entry_price=managed.state.entry_fill,
+                peak_price=managed.state.peak_bid,
+                realized=managed.realized,
+                pnl_pct=pnl_pct,
+                jump_url=managed.jump_url,
             )
-            self.storage.save_position(managed.position_id, managed.state, managed.realized)
-            pnl_pct = (
-                (fill_price - managed.state.entry_fill) / managed.state.entry_fill * 100
-                if managed.state.entry_fill
-                else 0.0
-            )
-            notes.append(
-                stopped_out(
-                    option=managed.state.option,
-                    qty=outcome.filled_qty,
-                    stop_price=fill_price,
-                    fill_price=fill_price,
-                    entry_price=managed.state.entry_fill,
-                    peak_price=managed.state.peak_bid,
-                    realized=managed.realized,
-                    pnl_pct=pnl_pct,
-                    jump_url=managed.jump_url,
-                )
-            )
-            if managed.state.closed:
-                self.forget(symbol)
+        ]
+        if managed.state.closed:
+            self.forget(symbol)
         return notes
 
     # --- guards ------------------------------------------------------------

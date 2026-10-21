@@ -1066,3 +1066,63 @@ async def test_the_skipped_steps_are_not_announced_later(storage):
     feed.set(1.10)              # back down through +125%
     feed.set(1.33)
     assert _runner_cards(await manager.poll_once()) == []
+
+
+# --- closing one position ----------------------------------------------------
+
+OTHER = build_spec(OptionKey("SPX", date(2026, 10, 6), 7800.0, "P")).occ_symbol
+
+
+async def _two_open(storage):
+    feed, broker, manager, pipeline, risk, cards = _with_pnl_channel(storage)
+    await enter(pipeline, feed)                                          # SPX 7815P
+    await paste(pipeline, text="SPX 7800P 0.475", message_id=700_009)    # SPX 7800P
+    assert set(manager.managed) == {SPX_OCC, OTHER}
+    return feed, broker, manager, pipeline, risk, cards
+
+
+async def test_closing_one_position_leaves_the_other_alone(storage):
+    feed, broker, manager, _, _, _ = await _two_open(storage)
+
+    notes = await manager.close_position(SPX_OCC)
+
+    assert has(notes, "SOLD ALL")
+    assert SPX_OCC not in manager.managed
+    assert OTHER in manager.managed
+    held = {p.occ_symbol: p.qty for p in await broker.get_positions()}
+    assert SPX_OCC not in held and held[OTHER] > 0
+
+
+async def test_a_close_frees_its_slot(storage):
+    _, _, manager, _, _, _ = await _two_open(storage)
+    assert storage.open_position_count() == 2
+
+    await manager.close_position(SPX_OCC)
+
+    assert storage.open_position_count() == 1
+
+
+async def test_a_close_posts_a_closed_pnl_card(storage):
+    feed, _, manager, _, _, cards = await _two_open(storage)
+    feed.set(0.60)
+
+    await manager.close_position(OTHER)
+
+    assert cards[-1].title.startswith("CLOSED")
+
+
+async def test_closing_something_not_held_does_nothing(storage):
+    _, _, manager, _, _, _ = await _two_open(storage)
+
+    assert await manager.close_position("NOT  HELD") == []
+    assert len(manager.managed) == 2
+
+
+async def test_flatten_still_closes_everything(storage):
+    _, broker, manager, _, _, cards = await _two_open(storage)
+
+    await manager.flatten_all()
+
+    assert manager.managed == {}
+    assert all(c.title.startswith("FLATTENED") for c in cards)
+    assert await broker.get_positions() == []
