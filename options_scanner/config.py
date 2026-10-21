@@ -119,6 +119,9 @@ class TrimSettings(BaseModel):
     runner_levels: list[int] = Field(
         default_factory=lambda: [75, 100, 150, 200, 500, 1000, 2000]
     )
+    # Also report the runner at every multiple of this step above the last
+    # trim, with no upper end. None = only runner_levels.
+    runner_step_pct: int | None = Field(default=None, gt=0)
     min_runner_contracts: int = Field(default=1, ge=0)
 
 
@@ -350,6 +353,7 @@ class Settings(BaseModel):
         return RulesConfig(
             trim_schedule=tuple((level, pct / 100.0) for level, pct in self.trim.schedule),
             runner_levels=tuple(self.trim.runner_levels),
+            runner_step_pct=self.trim.runner_step_pct,
             trail_arm_pct=self.trail.arm_at_pct,
             trail_schedule=tuple((threshold, mult) for threshold, mult in self.trail.schedule),
             breakeven_after_level_pct=min(level for level, _ in self.trim.schedule),

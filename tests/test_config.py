@@ -374,3 +374,15 @@ def test_the_pnl_webhook_token_never_reaches_a_log(monkeypatch):
 
     assert "secret-token-value" not in str(dumped)
     assert "123456789" in dumped["discord"]["pnl_webhook_url"]
+
+
+def test_the_committed_config_reports_the_runner_every_25_percent(monkeypatch):
+    env(monkeypatch)
+    rules = load_settings(load_env=False).rules()
+
+    assert rules.runner_step_pct == 25
+    assert rules.runner_levels == ()
+
+
+def test_a_runner_step_carries_through_to_the_rules_engine():
+    assert make_settings(trim={"runner_step_pct": 10}).rules().runner_step_pct == 10
