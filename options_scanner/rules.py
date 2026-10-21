@@ -98,6 +98,11 @@ class RulesConfig:
     # Levels above the ladder that sell nothing but are still reported once.
     runner_levels: tuple[int, ...] = DEFAULT_RUNNER_LEVELS
 
+    # Also report the runner at every multiple of this step above the last
+    # trim rung, with no upper end: 25 gives +75, +100, +125, +150, ... None
+    # reports only runner_levels.
+    runner_step_pct: int | None = None
+
     # The level at which the trailing stop starts working.
     trail_arm_pct: int = 75
 
@@ -169,6 +174,9 @@ class RulesConfig:
                 f"trail_schedule multipliers must not loosen as the gain grows, got {multipliers}"
             )
 
+        if self.runner_step_pct is not None and self.runner_step_pct <= 0:
+            raise ValueError(f"runner_step_pct must be a positive percent, got {self.runner_step_pct}")
+
         if self.confirm_breaches < 1:
             raise ValueError(f"confirm_breaches must be at least 1, got {self.confirm_breaches}")
         if self.min_runner_contracts < 0:
@@ -189,6 +197,28 @@ class RulesConfig:
     @property
     def all_levels(self) -> tuple[int, ...]:
         return tuple(level for level, _ in self.ladder)
+
+    def _first_step(self) -> int:
+        """The first stepped runner level: the first multiple of the step
+        above the last trim rung, so the stepping never lands on a trim."""
+        step = self.runner_step_pct or 0
+        top = max(level for level, _ in self.trim_schedule)
+        return (top // step + 1) * step
+
+    def ladder_through(self, entry_fill: float, bid: float) -> list[tuple[int, float | None]]:
+        """The ladder plus every stepped runner level the bid has reached.
+
+        The stepped levels have no upper end, so they cannot live in the fixed
+        `ladder` tuple; they are generated up to the current bid. Sorted and
+        de-duplicated against the listed levels.
+        """
+        rungs: dict[int, float | None] = dict(self.ladder)
+        if self.runner_step_pct:
+            level = self._first_step()
+            while bid >= level_price(entry_fill, level):
+                rungs.setdefault(level, None)
+                level += self.runner_step_pct
+        return sorted(rungs.items())
 
 
 # --- actions ---------------------------------------------------------------
@@ -376,7 +406,7 @@ def evaluate(state: PositionState, bid: float, config: RulesConfig | None = None
     #      runner levels above them sell nothing and are reported instead.
     #      A gap through several levels fires each one in ascending order.
     remaining = state.remaining_qty
-    for level_pct, fraction in config.ladder:
+    for level_pct, fraction in config.ladder_through(state.entry_fill, bid):
         if level_pct in state.fired_levels:
             continue
         if bid < level_price(state.entry_fill, level_pct):
@@ -580,12 +610,19 @@ def average_into(state: PositionState, added_qty: int, added_price: float) -> Av
 
 def next_level(state: PositionState, config: RulesConfig | None = None) -> tuple[int, float] | None:
     """The next unfired level and its price, for `!status`. None once the
-    whole ladder -- trims and runner levels alike -- is exhausted."""
+    whole ladder -- trims and runner levels alike -- is exhausted, which with
+    a runner step never happens: there is always another step."""
     config = config or RulesConfig()
-    for level_pct in config.all_levels:
-        if level_pct not in state.fired_levels:
-            return level_pct, level_price(state.entry_fill, level_pct)
-    return None
+    candidates = [level for level in config.all_levels if level not in state.fired_levels]
+    if config.runner_step_pct:
+        level = config._first_step()
+        while level in state.fired_levels:
+            level += config.runner_step_pct
+        candidates.append(level)
+    if not candidates:
+        return None
+    level_pct = min(candidates)
+    return level_pct, level_price(state.entry_fill, level_pct)
 
 
 __all__ = [

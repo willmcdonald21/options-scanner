@@ -802,3 +802,64 @@ def test_you_cannot_average_into_a_closed_position():
 def test_a_nonsensical_add_is_refused(qty, price):
     with pytest.raises(ValueError):
         average_into(_state(), added_qty=qty, added_price=price)
+
+
+# --- a runner level at every step ------------------------------------------
+
+STEPPED = RulesConfig(runner_levels=(), runner_step_pct=25)
+
+
+def test_with_a_step_every_25_percent_is_reported():
+    """0.475 entry: +75% is 0.83125, +125% is 1.06875, +175% is 1.30625."""
+    result = walk([0.84, 0.96, 1.07, 1.19, 1.31], config=STEPPED)
+
+    assert result.runner_levels == [75, 100, 125, 150, 175]
+
+
+def test_the_steps_have_no_upper_end():
+    result = walk([ENTRY * 21.0], config=STEPPED)  # +2000%
+
+    assert result.runner_levels[-1] == 2000
+    assert result.runner_levels == list(range(75, 2001, 25))
+
+
+def test_stepping_starts_above_the_last_trim_rung():
+    """+25% and +50% are trims, never runner levels."""
+    result = walk([0.60, 0.72, 0.84], config=STEPPED)
+
+    assert [t.level_pct for t in result.trims] == [25, 50]
+    assert result.runner_levels == [75]
+
+
+def test_each_step_is_reported_once():
+    result = walk([1.07, 1.08, 1.07, 1.10], config=STEPPED)
+
+    assert result.runner_levels.count(125) == 1
+
+
+def test_listed_levels_and_steps_merge_without_duplicates():
+    config = RulesConfig(runner_levels=(100, 300), runner_step_pct=50)  # steps: 100, 150, 200 ...
+
+    result = walk([ENTRY * 4.1], config=config)  # +310%
+
+    assert result.runner_levels == [100, 150, 200, 250, 300]
+
+
+def test_stepped_levels_never_sell_or_touch_the_stop_rules():
+    plain = walk([0.60, 0.72, 1.31, 2.00, 1.20], config=RulesConfig())
+    stepped = walk([0.60, 0.72, 1.31, 2.00, 1.20], config=STEPPED)
+
+    assert [(t.level_pct, t.qty) for t in stepped.trims] == [(t.level_pct, t.qty) for t in plain.trims]
+    assert stepped.stop_prices == plain.stop_prices
+
+
+def test_next_level_with_a_step_is_never_exhausted():
+    state = _state()
+    walk([ENTRY * 21.0], state=state, config=STEPPED)
+
+    assert next_level(state, STEPPED) == (2025, pytest.approx(ENTRY * 21.25))
+
+
+def test_a_step_must_be_positive():
+    with pytest.raises(ValueError, match="positive percent"):
+        RulesConfig(runner_step_pct=0)
