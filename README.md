@@ -90,7 +90,7 @@ Measured from your **actual fill price**, never the advisor's quoted entry.
 | +25% trim **fills** | stop moves to your entry fill — the trade can no longer lose |
 | +50% reached | sell **a quarter** of the original — a quarter is left running |
 | +75% reached | nothing sold, **the trailing stop arms** |
-| +100 / 150 / 200 / 500 / 1000 / 2000% | nothing sold — each posts a card as the runner climbs |
+| every further +25% (+100, +125, +150 … no upper end) | nothing sold — each posts a card as the runner climbs; a jump through several steps in one quote posts one card, for the highest |
 | trail, once armed | stop = `peak × 0.40`, i.e. 60% below the peak, floored at your entry |
 | above a +200% peak | the trail tightens to `peak × 0.55` |
 | above a +500% peak | it tightens again to `peak × 0.70` |
@@ -328,10 +328,21 @@ $0.48        $0.62        +$154.00
 and the runner's climb gets its own card at each level:
 
 ```
-RUNNER +200% — SPX 7815P · 0DTE
+SPX 7815P · 0DTE
+RUNNER +200%
 The runner reached +200%. Nothing sold — 4 still running.
 Peak         Stop
 $1.44        $0.79 (+64.6%)
+```
+
+and each stop move the same way, contract first:
+
+```
+SPX 7815P · 0DTE
+STOP → $0.79
+Trailing stop ratcheted up with a new peak.
+Stop             Why
+$0.48 → $0.79    trail
 ```
 
 Two deliberate differences from the advisor's cards: the `Trim Targets` block on
