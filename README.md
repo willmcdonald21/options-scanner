@@ -20,7 +20,8 @@ You paste an advisor alert into the **alerts channel**. The bot:
 3. runs the risk gate (halted? market open? caps? duplicate?)
 4. sizes the position **from your own account** (a percent of equity, halved
    for a lotto), not from the advisor's contract count
-5. buys with a **limit order**, walked up to a slippage cap — never a market order
+5. buys with a **market order**, unless the live ask is more than **15% above**
+   the alert price
 6. manages the position until it closes
 7. reacts ✅ (ordered), ❌ (rejected) or 🚫 (skipped) and posts the detail to the
    **updates channel**
@@ -71,9 +72,9 @@ buys more.
 
 | Reason | Rule |
 |---|---|
-| `ask_above_cap` | ask more than **10% above** the alert price — not chasing |
+| `ask_above_cap` | ask more than **15% above** the alert price — not chasing |
+| `no_ask` | no live ask to check the price against, so no market order |
 | `price_mismatch` | alerts with no trim targets (one-line, or a card without them): ask more than **25% below**, or no ask |
-| `contract_too_expensive` | alert price above **$3.00**; the walk never pays more either |
 | `budget_too_small` | the budget can't buy one contract: a lotto gets **half** a trade's budget, a super lotto **a quarter** |
 | market / cutoff | outside 9:30–16:00 ET; **no new entries after 15:30** |
 | limits | **2 different contracts** already open, or the **daily loss limit** reached. There is no cap on the number of trades. |
@@ -145,6 +146,10 @@ At or above $5,000 the guide's unit takes over: `risk.unit_pct_of_account`%
 (3%) per trade, with `risk.max_usd_per_trade` as an absolute ceiling on any one
 trade.
 
+Contracts are counted at the **live ask** when it is above the alert price,
+since that is what a market order pays: $1,000 buys 21 at a $0.475 alert but
+18 at a $0.54 ask.
+
 The tier is read off the card — the advisor writes `Lotto Trade — RISKY` as a
 description line. **It is sometimes said only in chat** ("Super lotto size
 less", with no card), which the bot cannot see; that trade sizes as a full
@@ -211,10 +216,12 @@ The settings most worth reading before a first run:
 
 ```yaml
 mode: paper                       # dry_run | paper | live
+entry:
+  max_slippage_pct: 15            # skip if the ask is more than 15% above the alert
 risk:
   paper_equity: 4000              # paper only: rehearse this account size
   small_account_budget_pct: 27.2727   # per trade below $5,000 ($300 on $1,100)
-  max_contract_price: 3.00        # skip dearer contracts
+  max_contract_price: null        # no per-contract ceiling
   max_deployed_pct: 55            # contracts open = account x 55% / one trade
   max_daily_loss_pct: 36.3636     # halts new entries ($400 on $1,100)
   max_trades_per_day: null        # no cap
@@ -261,7 +268,7 @@ permission on one of them looks identical to a bot with nothing to do.
 | `broker.kind` | Behaviour |
 |---|---|
 | `simulated` | Fills simulated locally against **real IBKR quotes**. Nothing leaves the process. The default. |
-| `ibkr` | Real limit orders sent to IBKR. On port 4002 that is the paper account — but it is a real order path. |
+| `ibkr` | Real orders sent to IBKR: market buys, limit sells. On port 4002 that is the paper account — but it is a real order path. |
 
 The combinations are policed, because each of these would otherwise misreport
 what happened:
@@ -429,14 +436,14 @@ options_scanner/
   market_hours.py    America/New_York sessions, holidays, early closes
   storage.py         SQLite audit trail, dedup, restart state
   notifier.py        notification builders (colours, pings, jump links)
-  execution.py       limit-order walking in, marketable limits out
+  execution.py       market orders in, marketable limits out
   position_manager.py the polling loop that drives the rules against quotes
   pipeline.py        the alert path, testable without Discord
   discord_bot.py     thin Discord adapter
   broker/base.py     the Broker interface every adapter implements
   broker/paper.py    simulated fills over a real quote feed
   broker/ibkr_quotes.py  real IBKR quotes, contract qualification
-  broker/ibkr.py     real IBKR limit orders, positions, account
+  broker/ibkr.py     real IBKR orders, positions, account
   main.py            wiring and startup checks
 config.yaml          tunables (committed)
 .env                 secrets (gitignored)
@@ -584,6 +591,11 @@ paper account still returns `Error 354`.
   the trail arms at +75% (the trail's floor), which leaves it unprotected from
   entry to +75%. This matters most with `max_contracts_per_trade: 1`, and at a
   3% unit on a five-figure account most alerts size well above one contract.
+- **A market entry can pay more than the buffer.** The 15% check runs on the
+  quote just before the order goes out. Once sent, a market order pays
+  whatever the book asks, so on a thin or fast 0DTE book the fill can land
+  above it. The entry card shows the real fill, and the ladder is measured
+  from it.
 - **Forced end-of-day exit is off.** A 0DTE runner whose trail never trips
   expires worthless. The bot warns near the close; flip
   `market.force_exit_enabled` to change it.
