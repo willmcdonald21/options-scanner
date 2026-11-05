@@ -52,6 +52,44 @@ async def test_a_buy_fills_at_the_ask_not_at_the_limit():
     assert result.avg_fill_price == 0.48  # the ask, not the 0.52 limit
 
 
+async def test_a_market_buy_fills_at_the_ask_whatever_it_is():
+    paper = broker([(0.60, 0.75)] * 4)
+
+    result = await paper.place_market_order(SPEC, "BUY", 10, timeout_seconds=5)
+
+    assert result.status is OrderStatus.FILLED
+    assert result.filled_qty == 10
+    assert result.avg_fill_price == 0.75
+    (position,) = await paper.get_positions()
+    assert position.qty == 10
+
+
+async def test_a_market_buy_with_no_ask_does_not_fill():
+    paper = broker([(0.47, None)] * 4)
+
+    result = await paper.place_market_order(SPEC, "BUY", 10, timeout_seconds=5)
+
+    assert result.status is OrderStatus.PENDING
+    assert "no ask" in result.detail
+    assert await paper.get_positions() == []
+
+
+async def test_a_market_buy_honours_the_partial_fill_fraction():
+    paper = broker([(0.47, 0.48)] * 4, fill_fraction=0.5)
+
+    result = await paper.place_market_order(SPEC, "BUY", 10, timeout_seconds=5)
+
+    assert result.status is OrderStatus.PARTIAL
+    assert result.filled_qty == 5
+
+
+@pytest.mark.parametrize("side,qty", [("SELL", 1), ("HOLD", 1), ("BUY", 0)])
+async def test_a_market_sell_or_nonsense_market_order_is_refused(side, qty):
+    paper = broker([(0.47, 0.48)])
+    with pytest.raises(BrokerError):
+        await paper.place_market_order(SPEC, side, qty, timeout_seconds=5)
+
+
 async def test_a_buy_below_the_ask_does_not_cross():
     paper = broker([(0.47, 0.48)] * 4)
 

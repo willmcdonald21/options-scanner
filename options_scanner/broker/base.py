@@ -8,7 +8,7 @@ phase 4 and `IBKRBroker` in phase 5.
 Deliberately narrow. No adapter is allowed to place a stop order, because the
 bot's stops are synthetic -- a broker-side stop on a 0DTE option gets
 triggered by a bad quote on a wide spread, which is the whole reason for
-managing them here instead.
+managing them here instead. Entries buy at market; exits sell with limits.
 """
 
 from __future__ import annotations
@@ -148,10 +148,25 @@ class Broker(ABC):
         timeout_seconds: float,
     ) -> OrderResult:
         """Submit a limit order and wait up to `timeout_seconds` for a
-        terminal state.
+        terminal state. Every exit goes through here.
+        """
 
-        Limit only, by design: there is no market-order path anywhere in this
-        interface. A market order on a wide 0DTE book is an open-ended cost.
+    @abstractmethod
+    async def place_market_order(
+        self,
+        spec: ContractSpec,
+        side: str,
+        qty: int,
+        *,
+        timeout_seconds: float,
+    ) -> OrderResult:
+        """Submit a market BUY and wait up to `timeout_seconds` for a terminal
+        state.
+
+        Entries only. Adapters refuse a market SELL: exits are priced through
+        the bid as limits, so a stop-out on a gapped book cannot sell for
+        nothing. The caller checks the ask against its cap before sending,
+        because once sent a market order pays whatever the book asks.
         """
 
     @abstractmethod

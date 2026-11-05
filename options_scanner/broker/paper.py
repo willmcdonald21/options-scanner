@@ -10,6 +10,7 @@ Fill simulation is deliberately pessimistic:
 
 * a BUY fills only if the **ask** is at or below the limit, and fills at the
   ask, not at the limit -- you do not get a better price than the book offers
+* a market BUY fills at the **ask**, whatever it is
 * a SELL fills only if the **bid** is at or above the limit, and fills at the
   bid
 * a one-sided or missing quote fills nothing
@@ -77,7 +78,7 @@ class _SimOrder:
     spec: ContractSpec
     side: str
     qty: int
-    limit_price: float
+    limit_price: float | None  # None is a market order
     status: OrderStatus = OrderStatus.PENDING
     filled_qty: int = 0
     avg_fill_price: float | None = None
@@ -165,12 +166,33 @@ class PaperBroker(Broker):
                     f"{held.qty if held else 0}"
                 )
 
+        return await self._place(spec, side, qty, round_price(limit_price))
+
+    async def place_market_order(
+        self,
+        spec: ContractSpec,
+        side: str,
+        qty: int,
+        *,
+        timeout_seconds: float,
+    ) -> OrderResult:
+        """A market BUY fills at the ask, whatever it is. No ask, no fill:
+        a real market order on an empty book sits there too."""
+        if side != "BUY":
+            raise BrokerError(f"market orders are entries only; refusing a market {side}")
+        if qty <= 0:
+            raise BrokerError(f"quantity must be positive, got {qty}")
+        return await self._place(spec, side, qty, None)
+
+    async def _place(
+        self, spec: ContractSpec, side: str, qty: int, limit_price: float | None
+    ) -> OrderResult:
         order = _SimOrder(
             broker_order_id=f"paper-{self._next_id}",
             spec=spec,
             side=side,
             qty=qty,
-            limit_price=round_price(limit_price),
+            limit_price=limit_price,
         )
         self._next_id += 1
         self._orders[order.broker_order_id] = order
@@ -214,6 +236,8 @@ class PaperBroker(Broker):
         if order.side == "BUY":
             if quote.ask is None or quote.ask <= 0:
                 return None
+            if order.limit_price is None:  # market
+                return quote.ask
             return quote.ask if quote.ask <= order.limit_price else None
         if quote.bid is None or quote.bid <= 0:
             return None
@@ -221,6 +245,8 @@ class PaperBroker(Broker):
 
     def _no_cross_detail(self, order: _SimOrder, quote: Quote) -> str:
         book = f"bid {quote.bid} / ask {quote.ask}"
+        if order.limit_price is None:
+            return f"market order with no ask to fill against ({book})"
         return f"limit {order.limit_price} does not cross ({book})"
 
     def _apply_fill(self, order: _SimOrder, qty: int, price: float) -> None:

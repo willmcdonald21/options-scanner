@@ -142,6 +142,20 @@ class FakeBroker(Broker):
             avg_fill_price=limit_price,
         )
 
+    async def place_market_order(self, spec, side, qty, *, timeout_seconds) -> OrderResult:
+        """Fills whole at the ask, like a market order on a deep book. No
+        ask, no fill. Recorded with a limit price of None."""
+        self.orders.append((spec.occ_symbol, side, qty, None))
+        order_id = f"fake-{len(self.orders)}"
+        if not self._ask:
+            return OrderResult(broker_order_id=order_id, status=OrderStatus.PENDING, detail="no ask")
+        return OrderResult(
+            broker_order_id=order_id,
+            status=OrderStatus.FILLED,
+            filled_qty=qty,
+            avg_fill_price=self._ask,
+        )
+
     async def cancel_order(self, broker_order_id: str) -> OrderResult:
         self.cancelled.append(broker_order_id)
         return OrderResult(broker_order_id=broker_order_id, status=OrderStatus.CANCELLED)

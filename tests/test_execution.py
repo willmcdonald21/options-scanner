@@ -46,6 +46,9 @@ class StubBroker:
             return OrderResult(f"id-{self._n}", OrderStatus.PENDING, detail="no cross")
         return self._results.pop(0)
 
+    async def place_market_order(self, spec, side, qty, *, timeout_seconds):
+        return await self.place_order(spec, side, qty, None, timeout_seconds=timeout_seconds)
+
     async def cancel_order(self, broker_order_id):
         self.cancelled.append(broker_order_id)
         return OrderResult(broker_order_id, OrderStatus.CANCELLED)

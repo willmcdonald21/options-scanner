@@ -2,9 +2,10 @@
 
 This is the adapter that actually sends orders. Three things shape it:
 
-* **Limit orders only.** There is no code path here that builds a market order
-  or a stop order. Stops are synthetic by design, and a broker-side stop on a
-  0DTE option gets triggered by a bad quote on a wide spread.
+* **Market buys, limit sells, never a stop.** Entries go in at market, after
+  the pipeline has checked the ask against its cap; every exit is a limit.
+  Stops are synthetic by design, and a broker-side stop on a 0DTE option gets
+  triggered by a bad quote on a wide spread.
 * **Scoped to one account, and options only, when reading positions.**
   `ib.positions()` is account-wide, not per-client. Once two accounts are
   linked under one username it returns both, so reads are filtered to this
@@ -142,20 +143,45 @@ class IBKRBroker(Broker):
 
         from ib_async import LimitOrder
 
+        order = LimitOrder(side, qty, round_price(limit_price))
+        # Belt and braces: if a future change ever reached this function with
+        # something other than a limit, it must not silently become one.
+        if order.orderType != "LMT":
+            raise BrokerError(f"refusing to place a {order.orderType} order; limits only")
+        return await self._submit(spec, order, f"@ {limit_price:.2f}", timeout_seconds)
+
+    async def place_market_order(
+        self,
+        spec: ContractSpec,
+        side: str,
+        qty: int,
+        *,
+        timeout_seconds: float,
+    ) -> OrderResult:
+        """Submit a market BUY and wait up to `timeout_seconds`. A timeout is
+        reported as PENDING, as for a limit."""
+        if side != "BUY":
+            raise BrokerError(f"market orders are entries only; refusing a market {side}")
+        if qty <= 0:
+            raise BrokerError(f"quantity must be positive, got {qty}")
+
+        from ib_async import MarketOrder
+
+        order = MarketOrder(side, qty)
+        if order.orderType != "MKT":
+            raise BrokerError(f"expected a MKT order, built {order.orderType}")
+        return await self._submit(spec, order, "@ MKT", timeout_seconds)
+
+    async def _submit(self, spec: ContractSpec, order, price_label: str, timeout_seconds: float) -> OrderResult:
         ib = self._ib
         contract = await self._quotes.qualified_contract(spec)
 
-        order = LimitOrder(side, qty, round_price(limit_price))
         order.tif = _TIF
         order.outsideRth = False
         # Naming the account is mandatory once the login manages more than one;
         # IBKR rejects the order otherwise. Left blank it means the only account,
         # which is what IBKR assumes anyway.
         order.account = self._account
-        # Belt and braces: if a future change ever reached this function with
-        # something other than a limit, it must not silently become one.
-        if order.orderType != "LMT":
-            raise BrokerError(f"refusing to place a {order.orderType} order; limits only")
 
         try:
             trade = ib.placeOrder(contract, order)
@@ -165,7 +191,8 @@ class IBKRBroker(Broker):
         broker_order_id = str(trade.order.orderId)
         self._trades[broker_order_id] = trade
         logger.info(
-            "placed %s %s x%s @ %.2f (order %s)", side, spec.occ_symbol, qty, limit_price, broker_order_id
+            "placed %s %s x%s %s (order %s)",
+            order.action, spec.occ_symbol, order.totalQuantity, price_label, broker_order_id,
         )
 
         await self._await_terminal(trade, timeout_seconds)

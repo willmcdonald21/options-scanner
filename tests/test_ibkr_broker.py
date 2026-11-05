@@ -190,6 +190,38 @@ async def test_the_limit_price_is_rounded_to_a_tick():
     assert order.lmtPrice == 0.48
 
 
+async def test_a_market_entry_is_a_day_market_order_in_regular_hours_on_our_account():
+    ib = FakeIB(FakeTrade(status="Filled", filled=10, avg=0.49))
+    adapter = IBKRBroker("127.0.0.1", 4002, 12, quotes=FakeQuotes(ib), account="DU111")
+    result = await adapter.place_market_order(SPX, "BUY", 10, timeout_seconds=1)
+
+    (_, order) = ib.placed[0]
+    assert order.orderType == "MKT"
+    assert order.action == "BUY"
+    assert order.totalQuantity == 10
+    assert order.tif == "DAY"
+    assert order.outsideRth is False
+    assert order.account == "DU111"
+    assert result.status is OrderStatus.FILLED
+    assert result.avg_fill_price == 0.49
+
+
+async def test_a_market_entry_still_working_at_the_timeout_is_pending():
+    ib = FakeIB(FakeTrade(status="Submitted", filled=0, avg=None))
+    result = await broker(ib).place_market_order(SPX, "BUY", 10, timeout_seconds=0)
+
+    assert result.status is OrderStatus.PENDING
+
+
+@pytest.mark.parametrize("side,qty", [("SELL", 1), ("HOLD", 1), ("BUY", 0), ("BUY", -5)])
+async def test_a_market_sell_or_a_nonsense_market_order_never_reaches_ibkr(side, qty):
+    """Exits are limits. A market sell on a gapped 0DTE book can fill at nothing."""
+    ib = FakeIB()
+    with pytest.raises(BrokerError):
+        await broker(ib).place_market_order(SPX, side, qty, timeout_seconds=1)
+    assert ib.placed == []
+
+
 async def test_a_partially_filled_order_maps_to_partial():
     ib = FakeIB(FakeTrade(status="Submitted", filled=5, avg=0.48))
     result = await broker(ib).place_order(SPX, "BUY", 21, 0.48, timeout_seconds=0)
