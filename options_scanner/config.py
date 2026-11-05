@@ -82,11 +82,11 @@ class DiscordSettings(BaseModel):
 
 
 class EntrySettings(BaseModel):
-    # Limit orders only, never market. Start at the alert's entry price and
-    # walk up toward the cap; cancel rather than chase past it.
+    # Entries are market orders. Skip the alert if the live ask is more than
+    # max_slippage_pct above the alert price; cancel a market order still
+    # unfilled after fill_timeout_seconds.
     max_slippage_pct: float = Field(default=10.0, gt=0, le=100)
     fill_timeout_seconds: float = Field(default=30.0, gt=0)
-    limit_walk_steps: int = Field(default=3, ge=1, le=20)
 
     # If the ask is already past the cap when the alert lands, the move has
     # gone without us. Chasing it is how a good system turns into a bad one.
@@ -186,8 +186,8 @@ class RiskSettings(BaseModel):
     small_account_budget_pct: float | None = Field(default=None, gt=0, le=100)
     small_account_budget_usd: float = Field(default=300.0, gt=0)
 
-    # Skip any contract dearer than this, and never let the entry walk pay
-    # more. None = no limit.
+    # Skip any contract dearer than this, and lower the slippage cap to it.
+    # None = no limit.
     max_contract_price: float | None = Field(default=None, gt=0)
 
     # An absolute ceiling applied *after* the percentage, so a large account

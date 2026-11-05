@@ -294,7 +294,8 @@ def test_the_committed_config_keeps_the_live_account_where_it_was(monkeypatch):
     assert limits.max_open_positions == 2
     assert limits.max_daily_loss_usd == 400.00
     assert limits.max_trades_per_day is None
-    assert settings.risk.max_contract_price == 3.00
+    assert settings.risk.max_contract_price is None  # no per-contract ceiling
+    assert settings.entry.max_slippage_pct == 15
 
 
 def test_the_committed_config_rehearses_a_4000_account_on_paper(monkeypatch):
@@ -340,7 +341,7 @@ def test_the_summary_names_the_budget_that_actually_sizes(monkeypatch):
 
     assert "27.2727% below $5,000 equity" in line
     assert "sized as at most $4,000" in line
-    assert "contracts <= $3.00" in line
+    assert "contracts <=" not in line  # no per-contract ceiling
 
 
 # --- the P&L channel --------------------------------------------------------
