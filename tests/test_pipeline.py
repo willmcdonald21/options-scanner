@@ -10,6 +10,7 @@ from datetime import date, datetime
 
 from conftest import SPEC_ALERT, SPX_OCC, TRADING_DAY, FakeBroker, find, make_settings, paste
 
+from options_scanner.broker.base import OrderResult, OrderStatus
 from options_scanner.market_hours import EASTERN
 from options_scanner.notifier import (
     REACTION_PLACED,
@@ -48,17 +49,18 @@ async def test_the_accepted_alert_is_sized_from_our_config_not_the_advisor(pipel
     values = {name: value for name, value, _ in note.fields}
     assert values["Advisor size"] == "25 contracts"
     # 3% of the fake broker's $100,000 is $3,000, capped by max_usd_per_trade
-    # at $1,000, which buys 21 at $47.50 -- nothing to do with the advisor's 25.
-    assert values["Our size"].startswith("21 contracts")
+    # at $1,000, which buys 20 at the $48 ask -- nothing to do with the
+    # advisor's 25.
+    assert values["Our size"].startswith("20 contracts")
 
 
-async def test_the_dry_run_order_is_a_limit_with_a_walk_cap(pipeline):
+async def test_the_dry_run_order_is_a_market_buy_with_a_skip_cap(pipeline):
     result = await paste(pipeline)
 
     note = find(result, "WOULD BUY")
     values = {name: value for name, value, _ in note.fields}
-    assert values["Order"] == "BUY 21 @ limit $0.475"
-    assert values["Walk to"] == "$0.523 max"  # +10% of 0.475
+    assert values["Order"] == "BUY 20 @ MKT"
+    assert values["Skip if ask above"] == "$0.523"  # +10% of 0.475, the model default
     assert values["Give up after"] == "30s"
     assert "nothing was sent" in note.description.lower()
 
@@ -95,8 +97,9 @@ async def test_the_dry_run_records_an_order_row_marked_as_such(pipeline, storage
     assert len(orders) == 1
     assert orders[0]["status"] == "DRY_RUN"
     assert orders[0]["side"] == "BUY"
-    assert orders[0]["qty"] == 21
-    assert orders[0]["order_type"] == "LMT"  # never a market order
+    assert orders[0]["qty"] == 20
+    assert orders[0]["order_type"] == "MKT"
+    assert orders[0]["limit_price"] is None
 
 
 async def test_every_notification_links_back_to_the_alert(pipeline):
@@ -343,6 +346,97 @@ async def test_an_ask_already_above_the_slippage_cap_is_skipped(settings, storag
     assert "ask_above_cap" in note.to_text()
 
 
+# --- market entries -------------------------------------------------------
+
+
+def _paper(storage, broker, **entry):
+    settings = make_settings(mode="paper", entry=entry) if entry else make_settings(mode="paper")
+    return AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+
+async def test_an_entry_is_sent_as_a_market_order_and_fills_at_the_ask(storage):
+    broker = FakeBroker(bid=0.47, ask=0.48)
+
+    result = await paste(_paper(storage, broker))
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders == [(SPX_OCC, "BUY", 20, None)]  # None: no limit price
+    (row,) = storage._conn.execute("SELECT * FROM orders").fetchall()
+    assert row["order_type"] == "MKT"
+    assert row["avg_fill_price"] == 0.48
+    assert "$0.48" in find(result, "BUY").to_text()
+
+
+async def test_no_live_ask_means_no_market_order(storage):
+    """A market order with nothing to check it against could fill at any price."""
+    broker = FakeBroker(bid=0.47, ask=None)
+
+    result = await paste(_paper(storage, broker))
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    assert "no_ask" in find(result, "SKIPPED").to_text()
+
+
+async def test_a_quote_failure_means_no_market_order(storage):
+    broker = FakeBroker(quote_raises=True)
+
+    result = await paste(_paper(storage, broker))
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    assert "no_ask" in find(result, "SKIPPED").to_text()
+
+
+async def test_a_15_percent_buffer_buys_an_ask_inside_it(storage):
+    """0.475 * 1.15 = 0.546, so an ask of 0.54 is bought."""
+    broker = FakeBroker(bid=0.53, ask=0.54)
+
+    result = await paste(_paper(storage, broker, max_slippage_pct=15))
+
+    assert result.final_reaction == REACTION_PLACED
+    assert len(broker.orders) == 1
+
+
+async def test_a_15_percent_buffer_skips_an_ask_past_it(storage):
+    broker = FakeBroker(bid=0.54, ask=0.55)
+
+    result = await paste(_paper(storage, broker, max_slippage_pct=15))
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    assert "ask_above_cap" in find(result, "SKIPPED").to_text()
+
+
+async def test_an_ask_above_the_alert_is_what_sizes_the_trade(storage):
+    """$1,000 buys 21 at the 0.475 alert but only 18 at a 0.54 ask. Sizing off
+    the alert would put $1,134 into a $1,000 trade."""
+    broker = FakeBroker(bid=0.53, ask=0.54)
+
+    result = await paste(_paper(storage, broker, max_slippage_pct=15))
+
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert values["Our size"].startswith("18 contracts")
+    assert broker.orders[0][2] == 18
+
+
+async def test_a_market_order_that_does_not_fill_posts_no_fill_not_an_error(storage):
+    class NeverFills(FakeBroker):
+        async def place_market_order(self, spec, side, qty, *, timeout_seconds):
+            self.orders.append((spec.occ_symbol, side, qty, None))
+            return OrderResult(broker_order_id="fake-1", status=OrderStatus.PENDING)
+
+    broker = NeverFills()
+
+    result = await paste(_paper(storage, broker))
+
+    assert result.final_reaction == REACTION_SKIPPED
+    note = find(result, "NO FILL")
+    assert "did not fill" in note.description
+    assert broker.cancelled == ["fake-1"]
+    assert not any("error" in title.lower() for title in [n.title for n in result.notifications])
+
+
 async def test_an_ask_inside_the_cap_is_accepted(settings, storage):
     ok = FakeBroker(bid=0.50, ask=0.51)
     pipe = AlertPipeline(settings, storage, RiskGate(settings, storage), ok)
@@ -491,7 +585,7 @@ async def test_the_ceiling_still_binds_on_a_large_account(storage):
     # 3% of $5m is $150,000. The $1,000 ceiling is the only thing between that
     # and a position nobody intended.
     values = {name: value for name, value, _ in find(result, "PARSED").fields}
-    assert values["Our size"].startswith("21 contracts")
+    assert values["Our size"].startswith("20 contracts")
 
 
 async def test_a_lotto_is_sized_at_half_a_unit(storage):
@@ -654,13 +748,13 @@ async def test_a_contract_above_the_price_limit_is_skipped(storage):
     assert "0.40" in find(result, "skipped").description
 
 
-async def test_the_price_limit_also_caps_the_entry_walk(storage):
-    """0.475 + 10% slippage would walk to 0.523. With a 0.50 limit the walk
-    stops at 0.50 -- the limit is on what we could pay."""
+async def test_the_price_limit_also_lowers_the_skip_cap(storage):
+    """0.475 + 10% slippage would allow an ask up to 0.523. With a 0.50 limit
+    the cap is 0.50 -- the limit is on what we could pay."""
     result = await paste(_small(storage, broker=None, max_contract_price=0.50))
 
     values = {name: value for name, value, _ in find(result, "WOULD BUY").fields}
-    assert values["Walk to"] == "$0.50 max"
+    assert values["Skip if ask above"] == "$0.50"
 
 
 async def test_an_ask_above_the_price_limit_is_not_chased(storage):
@@ -675,8 +769,8 @@ async def test_an_ask_above_the_price_limit_is_not_chased(storage):
 
 async def test_a_tier_budget_that_cannot_buy_one_contract_is_skipped(storage):
     """A super lotto on a $100 budget gets $25, and one contract costs
-    $47.50. compute_contracts would floor that up to one contract -- nearly
-    double the intended risk. Skip instead, and say why."""
+    $48 at the ask. compute_contracts would floor that up to one contract --
+    nearly double the intended risk. Skip instead, and say why."""
     broker = FakeBroker()
     pipeline = _small(storage, broker, small_account_budget_usd=100.0)
 
@@ -685,7 +779,7 @@ async def test_a_tier_budget_that_cannot_buy_one_contract_is_skipped(storage):
     assert result.final_reaction == REACTION_SKIPPED
     assert broker.orders == []
     description = find(result, "skipped").description
-    assert "$47.50" in description
+    assert "$48.00" in description
     assert "$25.00" in description
 
 
@@ -773,7 +867,7 @@ async def test_the_price_check_does_not_apply_to_full_cards(storage):
 
 
 async def test_a_one_line_alert_chasing_above_the_cap_is_still_skipped(storage):
-    """Today's real case: alert 1.99, ask 2.22, over the +10% walk cap."""
+    """Today's real case: alert 1.99, ask 2.22, over the +10% slippage cap."""
     broker = FakeBroker(bid=0.55, ask=0.56)  # 0.475 * 1.10 = 0.5225
     settings = make_settings(mode="paper")
     pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)

@@ -439,7 +439,7 @@ class AlertPipeline:
                 )
                 return
             # The limit is on what we could PAY, not only on the quoted entry:
-            # a $2.95 alert's slippage walk would otherwise reach $3.25.
+            # a $2.95 alert's slippage cap would otherwise allow an ask of $3.25.
             cap_price = min(cap_price, max_price)
 
         # With no trim targets -- a one-line alert, or a card whose ladder was
@@ -479,8 +479,29 @@ class AlertPipeline:
                 )
                 return
 
-        if quote is not None and quote.ask and settings.entry.skip_if_ask_above_cap:
-            if quote.ask > cap_price:
+        # Entries are market orders, so the ask is the only thing standing
+        # between the alert price and whatever the book charges. No ask, no
+        # order: there is nothing to hold it against. Dry run sends nothing,
+        # so a missing quote does not block it.
+        ask = quote.ask if quote is not None and quote.ask and quote.ask > 0 else None
+        if not self.dry_run and self.broker is not None and ask is None:
+            detail = (
+                "no live ask for this contract, so a market order could fill at any "
+                "price. Nothing was ordered."
+            )
+            record(STATUS_SKIPPED, f"no_ask: {detail}")
+            self.storage.bump_day(trading_day, alerts_skipped=1)
+            result.add(
+                REACTION_SKIPPED,
+                alert_skipped(
+                    reason="no_ask", detail=detail, jump_url=jump_url,
+                    option=alert.option, today=trading_day,
+                ),
+            )
+            return
+
+        if ask is not None and settings.entry.skip_if_ask_above_cap:
+            if ask > cap_price:
                 if max_price is not None and cap_price >= max_price:
                     why = f"the {max_price:.2f} per-contract limit"
                 else:
@@ -490,7 +511,7 @@ class AlertPipeline:
                         "alert entry)"
                     )
                 detail = (
-                    f"ask is {quote.ask:.3f}, above {why}. "
+                    f"ask is {ask:.3f}, above {why}. "
                     "The move went without us; not chasing."
                 )
                 record(STATUS_SKIPPED, f"ask_above_cap: {detail}")
@@ -525,6 +546,9 @@ class AlertPipeline:
             return
         budget, equity_is_assumed = sized
         cap_usd = budget.cap_usd
+        # A market order pays the ask, so size off it when it is above the
+        # alert, or the budget is overspent by up to the whole slippage cap.
+        sizing_price = max(reference_price, ask) if ask is not None else reference_price
         self.risk.observe_equity(budget.sizing_equity)
         size_note = sizing_note(
             equity=budget.real_equity,
@@ -537,12 +561,12 @@ class AlertPipeline:
             sized_as=budget.sizing_equity,
         )
 
-        if not affords_one_contract(cap_usd, reference_price):
+        if not affords_one_contract(cap_usd, sizing_price):
             # compute_contracts would floor this up to one contract. On a small
             # account that is not "slightly over budget": a super lotto's $75
             # becomes a $295 position, four times the intended risk.
             detail = (
-                f"one contract costs {money(reference_price * 100)} but this "
+                f"one contract costs {money(sizing_price * 100)} but this "
                 f"trade's budget is {money(cap_usd)}. {size_note}. Nothing was ordered."
             )
             record(STATUS_SKIPPED, f"budget_too_small: {detail}")
@@ -557,11 +581,11 @@ class AlertPipeline:
             return
 
         contracts = compute_contracts(
-            reference_price,
+            sizing_price,
             cap_usd,
             max_contracts=settings.risk.max_contracts_per_trade,
         )
-        cost = position_cost(contracts, reference_price)
+        cost = position_cost(contracts, sizing_price)
 
         ladder = [
             (level, level_price(reference_price, level))
@@ -593,8 +617,8 @@ class AlertPipeline:
                 qty=contracts,
                 status="DRY_RUN",
                 alert_message_id=alert.message_id,
-                limit_price=reference_price,
-                detail="dry run; nothing sent to the broker",
+                order_type="MKT",
+                detail="dry run; market order not sent to the broker",
             )
             result.accepted.append(alert)
             result.add(
@@ -603,7 +627,6 @@ class AlertPipeline:
                 would_place_entry(
                     option=alert.option,
                     qty=contracts,
-                    limit_price=reference_price,
                     cap_price=cap_price,
                     timeout_seconds=settings.entry.fill_timeout_seconds,
                     jump_url=jump_url,
@@ -627,7 +650,7 @@ class AlertPipeline:
         result.add(REACTION_RECEIVED, parsed_note)
 
         # Claim the alert before the slow part, and before the order row that
-        # references it. The walk can take tens of seconds, and the fingerprint
+        # references it. The order can take up to its timeout, and the fingerprint
         # has to be on record for that whole window or a second paste during it
         # would be ordered as well.
         record(STATUS_ACCEPTED, "entry order working", alert=alert)
@@ -639,16 +662,13 @@ class AlertPipeline:
             qty=contracts,
             status="PENDING",
             alert_message_id=alert.message_id,
-            limit_price=reference_price,
+            order_type="MKT",
         )
 
         outcome = await execute_entry(
             self.broker,
             spec,
             contracts,
-            start_price=reference_price,
-            cap_price=cap_price,
-            steps=settings.entry.limit_walk_steps,
             timeout_seconds=settings.entry.fill_timeout_seconds,
         )
         self.storage.update_order(
@@ -664,9 +684,9 @@ class AlertPipeline:
             result.add(
                 REACTION_SKIPPED,
                 entry_unfilled(
-                    occ_symbol=spec.occ_symbol,
+                    option=alert.option,
                     qty=contracts,
-                    cap_price=cap_price,
+                    detail=outcome.detail,
                     timeout_seconds=settings.entry.fill_timeout_seconds,
                     jump_url=jump_url,
                     today=trading_day,

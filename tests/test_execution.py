@@ -1,7 +1,4 @@
-"""Order execution: walking a limit into a fill, and getting back out.
-
-Limit orders only -- there is no market-order path to test, by design.
-"""
+"""Order execution: one market order in, marketable limits out."""
 
 from datetime import date, datetime
 
@@ -13,7 +10,6 @@ from options_scanner.execution import (
     execute_entry,
     execute_exit,
     safe_sell_qty,
-    walk_prices,
 )
 from options_scanner.models import OptionKey
 
@@ -22,7 +18,7 @@ NOW = datetime(2026, 10, 6, 11, 0)
 
 
 class StubBroker:
-    """Scripted order results, so the walking logic can be driven exactly."""
+    """Scripted order results, so execution can be driven exactly."""
 
     def __init__(self, results, *, bid=0.47, ask=0.48, positions=None, raise_on=()):
         self._results = list(results)
@@ -76,132 +72,63 @@ def rejected(detail="no permission", order_id="id-1"):
     return OrderResult(order_id, OrderStatus.REJECTED, detail=detail)
 
 
-# --- the price walk -------------------------------------------------------
-
-
-def test_the_walk_starts_at_the_alert_price_and_ends_at_the_cap():
-    prices = walk_prices(0.475, 0.523, 3)
-    assert prices[0] == 0.48  # rounded to a tick
-    assert prices[-1] == 0.52
-
-
-def test_a_single_step_only_tries_the_start_price():
-    assert walk_prices(0.475, 0.523, 1) == [0.48]
-
-
-def test_a_cap_at_or_below_the_start_collapses_to_one_price():
-    assert walk_prices(0.50, 0.50, 3) == [0.50]
-    assert walk_prices(0.50, 0.40, 3) == [0.50]
-
-
-def test_steps_that_round_onto_the_same_cent_are_collapsed():
-    """Re-placing an identical limit achieves nothing but audit-trail noise."""
-    prices = walk_prices(0.20, 0.21, 5)
-    assert prices == sorted(set(prices))
-    assert len(prices) <= 2
-
-
-def test_the_walk_is_monotonic_and_never_exceeds_the_cap():
-    prices = walk_prices(1.00, 1.10, 6)
-    assert prices == sorted(prices)
-    assert max(prices) == 1.10
-
-
-def test_zero_steps_is_rejected():
-    with pytest.raises(ValueError, match="at least 1"):
-        walk_prices(0.5, 0.6, 0)
-
-
 # --- entries --------------------------------------------------------------
 
 
-async def test_a_fill_at_the_first_price_stops_walking():
-    broker = StubBroker([filled(21, 0.475)])
+async def test_an_entry_is_one_market_buy_for_the_whole_size():
+    broker = StubBroker([filled(21, 0.49)])
 
-    outcome = await execute_entry(
-        broker, SPEC, 21, start_price=0.475, cap_price=0.523, steps=3, timeout_seconds=30
-    )
+    outcome = await execute_entry(broker, SPEC, 21, timeout_seconds=30)
 
     assert outcome.is_filled
     assert outcome.filled_qty == 21
-    assert outcome.avg_price == 0.48
-    assert len(broker.placed) == 1  # never walked past the advertised price
+    assert outcome.avg_price == 0.49
+    assert broker.placed == [("BUY", 21, None)]  # None: market, no limit
 
 
-async def test_an_unfilled_attempt_is_cancelled_before_the_price_moves():
-    """Two live limits at different prices could both fill."""
-    broker = StubBroker([pending("a"), filled(21, 0.50, "b")])
+async def test_a_market_entry_still_working_at_the_timeout_is_cancelled():
+    """Nothing is left live at the broker that nobody is watching."""
+    broker = StubBroker([pending("a")])
 
-    outcome = await execute_entry(
-        broker, SPEC, 21, start_price=0.475, cap_price=0.523, steps=3, timeout_seconds=3
-    )
-
-    assert outcome.is_filled
-    assert broker.cancelled == ["a"]
-    assert [p[2] for p in broker.placed] == [0.48, 0.50]
-
-
-async def test_the_walk_gives_up_at_the_cap_without_chasing():
-    broker = StubBroker([pending("a"), pending("b"), pending("c"), pending("d")])
-
-    outcome = await execute_entry(
-        broker, SPEC, 21, start_price=0.475, cap_price=0.523, steps=3, timeout_seconds=3
-    )
+    outcome = await execute_entry(broker, SPEC, 21, timeout_seconds=3)
 
     assert outcome.status == "UNFILLED"
-    assert outcome.filled_qty == 0
-    assert "not chasing" in outcome.detail
-    assert max(p[2] for p in broker.placed) <= 0.53
+    assert broker.cancelled == ["a"]
+    assert "did not fill within 3s" in outcome.detail
+    assert len(broker.placed) == 1  # never a second order
 
 
-async def test_a_rejection_stops_the_walk_immediately():
-    """A rejection is about the order, not the price, so walking will not help."""
+async def test_a_rejected_market_entry_reports_why_and_is_not_retried():
     broker = StubBroker([rejected("contract closed")])
 
-    outcome = await execute_entry(
-        broker, SPEC, 21, start_price=0.475, cap_price=0.523, steps=3, timeout_seconds=3
-    )
+    outcome = await execute_entry(broker, SPEC, 21, timeout_seconds=3)
 
     assert outcome.filled_qty == 0
     assert "contract closed" in outcome.detail
     assert len(broker.placed) == 1
+    assert broker.cancelled == []
 
 
-async def test_a_partial_fill_continues_with_only_the_remainder():
-    broker = StubBroker([partial(10, 0.48, "a"), filled(11, 0.50, "b")])
+async def test_a_broker_error_is_reported_not_raised():
+    broker = StubBroker([], raise_on={1})
 
-    outcome = await execute_entry(
-        broker, SPEC, 21, start_price=0.475, cap_price=0.523, steps=3, timeout_seconds=3
-    )
+    outcome = await execute_entry(broker, SPEC, 21, timeout_seconds=3)
 
-    assert outcome.filled_qty == 21
-    assert broker.placed[1][1] == 11  # asked for the remainder, not 21 again
-    # Blended average of 10 @ 0.48 and 11 @ 0.50.
-    assert outcome.avg_price == pytest.approx(0.49, abs=0.01)
+    assert outcome.filled_qty == 0
+    assert "broker said no" in outcome.detail
+    assert [a.status for a in outcome.attempts] == ["ERROR"]
 
 
-async def test_a_partial_fill_that_never_completes_is_reported_as_partial():
-    broker = StubBroker([partial(10, 0.48, "a"), pending("b"), pending("c"), pending("d")])
+async def test_a_partial_market_fill_cancels_the_rest_and_keeps_what_filled():
+    broker = StubBroker([partial(10, 0.48, "a")])
 
-    outcome = await execute_entry(
-        broker, SPEC, 21, start_price=0.475, cap_price=0.523, steps=3, timeout_seconds=3
-    )
+    outcome = await execute_entry(broker, SPEC, 21, timeout_seconds=3)
 
     assert outcome.status == "PARTIAL"
     assert outcome.filled_qty == 10
-    assert outcome.any_fill is True
-    assert outcome.is_filled is False
-
-
-async def test_a_broker_error_on_one_attempt_does_not_abort_the_walk():
-    broker = StubBroker([pending("a"), filled(21, 0.50, "b")], raise_on={1})
-
-    outcome = await execute_entry(
-        broker, SPEC, 21, start_price=0.475, cap_price=0.523, steps=3, timeout_seconds=3
-    )
-
-    assert outcome.is_filled
-    assert any(a.status == "ERROR" for a in outcome.attempts)
+    assert outcome.avg_price == 0.48
+    assert broker.cancelled == ["a"]
+    assert len(broker.placed) == 1  # the remainder is not bought again
 
 
 async def test_an_order_that_fills_while_being_cancelled_is_still_counted():
@@ -213,23 +140,11 @@ async def test_an_order_that_fills_while_being_cancelled_is_still_counted():
             return OrderResult(broker_order_id, OrderStatus.FILLED, filled_qty=21, avg_fill_price=0.49)
 
     broker = RacyBroker([pending("a")])
-    outcome = await execute_entry(
-        broker, SPEC, 21, start_price=0.475, cap_price=0.475, steps=1, timeout_seconds=3
-    )
+    outcome = await execute_entry(broker, SPEC, 21, timeout_seconds=3)
 
     assert outcome.filled_qty == 21
+    assert outcome.avg_price == 0.49
     assert any(a.status == "FILLED_ON_CANCEL" for a in outcome.attempts)
-
-
-async def test_every_attempt_is_recorded_for_the_audit_trail():
-    broker = StubBroker([pending("a"), pending("b"), filled(21, 0.52, "c")])
-
-    outcome = await execute_entry(
-        broker, SPEC, 21, start_price=0.475, cap_price=0.523, steps=3, timeout_seconds=3
-    )
-
-    assert len(outcome.attempts) == 3
-    assert [a.limit_price for a in outcome.attempts] == [0.48, 0.50, 0.52]
 
 
 # --- exits ----------------------------------------------------------------
@@ -341,9 +256,7 @@ async def test_a_partial_fill_is_not_counted_twice_by_the_cancel():
 
     broker = PartialThenCancel([partial(4, 0.48, "a")])
 
-    outcome = await execute_entry(
-        broker, SPEC, 10, start_price=0.475, cap_price=0.475, steps=1, timeout_seconds=1
-    )
+    outcome = await execute_entry(broker, SPEC, 10, timeout_seconds=1)
 
     assert outcome.filled_qty == 4
     assert outcome.status == "PARTIAL"
@@ -359,11 +272,10 @@ async def test_only_the_incremental_fill_from_a_cancel_is_added():
 
     broker = FilledMoreOnCancel([partial(4, 0.48, "a")])
 
-    outcome = await execute_entry(
-        broker, SPEC, 10, start_price=0.475, cap_price=0.475, steps=1, timeout_seconds=1
-    )
+    outcome = await execute_entry(broker, SPEC, 10, timeout_seconds=1)
 
     assert outcome.filled_qty == 7
+    assert outcome.avg_price == 0.49  # the cancel's cumulative average, for all 7
     assert any(a.status == "FILLED_ON_CANCEL" and a.filled_qty == 3 for a in outcome.attempts)
 
 

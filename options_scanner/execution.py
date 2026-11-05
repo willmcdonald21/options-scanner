@@ -1,16 +1,10 @@
-"""Order execution: walking a limit into a fill, and getting out again.
+"""Order execution: buying in at market, and getting out again with limits.
 
-Limit orders only. There is no market-order path anywhere in this module or in
-the `Broker` interface, because a market order on a wide 0DTE book is an
-open-ended cost.
+Entries are one market order, so a call that passed the pipeline's checks is
+bought rather than missed. The pipeline is what refuses an ask too far above
+the alert; this module only sends the order and accounts for what filled.
 
-Entries walk. The first attempt sits at the alert's own entry price and each
-subsequent one moves a step closer to the slippage cap, so a trade that can be
-had at the advertised price is had at the advertised price, and one that cannot
-is given a bounded number of chances before being abandoned. Nothing chases
-past the cap.
-
-Exits do the opposite: they are priced *through* the bid so they fill. A
+Exits are limits, priced *through* the bid so they fill. A
 synthetic stop that has triggered has already decided the position should be
 gone, so the risk worth minimising there is not slippage but failing to exit.
 """
@@ -30,10 +24,10 @@ logger = logging.getLogger("options_scanner.execution")
 
 @dataclass
 class Attempt:
-    """One limit placed, and what came of it. Kept so the audit trail can show
-    the whole walk rather than only its outcome."""
+    """One order placed, and what came of it. Kept so the audit trail can show
+    every order rather than only the outcome."""
 
-    limit_price: float
+    limit_price: float | None  # None is a market order
     status: str
     filled_qty: int = 0
     broker_order_id: str | None = None
@@ -67,40 +61,19 @@ class Outcome:
         return (self.avg_price or 0.0) * self.filled_qty * 100
 
 
-def walk_prices(start: float, cap: float, steps: int) -> list[float]:
-    """The ladder of limit prices to try, from `start` up to `cap` inclusive.
-
-    Deduplicated after rounding, because on a cheap contract several steps can
-    land on the same cent and re-placing an identical limit achieves nothing
-    but noise in the audit trail.
-    """
-    if steps < 1:
-        raise ValueError(f"steps must be at least 1, got {steps}")
-    start, cap = round_price(start), round_price(cap)
-    if cap <= start or steps == 1:
-        return [start]
-    stride = (cap - start) / (steps - 1)
-    prices: list[float] = []
-    for index in range(steps):
-        price = round_price(start + stride * index)
-        if price not in prices:
-            prices.append(price)
-    if prices[-1] != cap:
-        prices.append(cap)
-    return prices
-
-
 async def execute_entry(
     broker: Broker,
     spec: ContractSpec,
     qty: int,
     *,
-    start_price: float,
-    cap_price: float,
-    steps: int,
     timeout_seconds: float,
 ) -> Outcome:
-    """Buy `qty` by walking a limit from `start_price` toward `cap_price`.
+    """Buy `qty` with one market order.
+
+    The caller has already checked the ask against its cap: once sent, a
+    market order pays whatever the book asks. An order still working at the
+    timeout -- an empty book, a halted contract -- is cancelled, so nothing is
+    left live that nobody is watching.
 
     Returns rather than raises on failure. A partial fill is a legitimate
     outcome: the caller carries on with whatever actually filled, because the
@@ -108,55 +81,36 @@ async def execute_entry(
     hoped to hold.
     """
     outcome = Outcome(requested_qty=qty)
-    prices = walk_prices(start_price, cap_price, steps)
-    per_attempt = max(timeout_seconds / len(prices), 0.5)
-    remaining = qty
-    total_cost = 0.0
+    try:
+        result = await broker.place_market_order(spec, "BUY", qty, timeout_seconds=timeout_seconds)
+    except BrokerError as exc:
+        logger.warning("market entry for %s failed: %s", spec.occ_symbol, exc)
+        outcome.attempts.append(Attempt(None, "ERROR", detail=str(exc)))
+        outcome.detail = f"market order failed: {exc}"
+        return outcome
 
-    for limit in prices:
-        if remaining <= 0:
-            break
-        try:
-            result = await broker.place_order(
-                spec, "BUY", remaining, limit, timeout_seconds=per_attempt
-            )
-        except BrokerError as exc:
-            logger.warning("entry attempt at %.2f failed: %s", limit, exc)
-            outcome.attempts.append(Attempt(limit, "ERROR", detail=str(exc)))
-            continue
+    filled = _filled(result)
+    outcome.attempts.append(
+        Attempt(None, result.status.value, filled, result.broker_order_id, result.detail)
+    )
+    outcome.filled_qty = filled
+    avg = result.avg_fill_price if filled else None
 
-        filled = _filled(result)
-        outcome.attempts.append(
-            Attempt(limit, result.status.value, filled, result.broker_order_id, result.detail)
+    if result.status is OrderStatus.REJECTED:
+        outcome.detail = f"market order rejected: {result.detail}"
+    elif not result.status.is_done:
+        extra, price = await _cancel_quietly(
+            broker, result.broker_order_id, outcome, already_counted=filled
         )
+        # A cancel reports the order's cumulative average, so once it adds
+        # contracts its price is the whole order's price.
+        if extra and price:
+            avg = price
 
-        if filled:
-            total_cost += filled * (result.avg_fill_price or limit)
-            remaining -= filled
-            outcome.filled_qty += filled
-
-        if result.status is OrderStatus.REJECTED:
-            # A rejection is about the order itself -- a bad price, a closed
-            # contract, no permission -- so walking the price will not help.
-            outcome.detail = f"rejected at {limit:.2f}: {result.detail}"
-            break
-
-        if not result.status.is_done:
-            # Still working when the attempt timed out. Cancel before moving
-            # the price, or two live limits could both fill.
-            extra, price = await _cancel_quietly(
-                broker, result.broker_order_id, outcome, already_counted=filled
-            )
-            if extra:
-                total_cost += extra * (price or limit)
-                remaining -= extra
-
-    if outcome.filled_qty:
-        outcome.avg_price = round_price(total_cost / outcome.filled_qty)
+    if outcome.filled_qty and avg:
+        outcome.avg_price = round_price(avg)
     if not outcome.detail and not outcome.any_fill:
-        outcome.detail = (
-            f"no fill after {len(outcome.attempts)} attempt(s) up to {cap_price:.2f}; not chasing"
-        )
+        outcome.detail = f"market order for {qty} did not fill within {timeout_seconds:.0f}s; cancelled"
     return outcome
 
 

@@ -324,7 +324,6 @@ def would_place_entry(
     *,
     option: OptionKey,
     qty: int,
-    limit_price: float,
     cap_price: float,
     timeout_seconds: float,
     jump_url: str | None,
@@ -337,8 +336,8 @@ def would_place_entry(
         description="Dry run — nothing was sent to the broker.",
         jump_url=jump_url,
     )
-    note.add("Order", f"BUY {qty} @ limit {price(limit_price)}")
-    note.add("Walk to", f"{price(cap_price)} max")
+    note.add("Order", f"BUY {qty} @ MKT")
+    note.add("Skip if ask above", price(cap_price))
     note.add("Give up after", f"{timeout_seconds:.0f}s")
     return note
 
@@ -478,18 +477,21 @@ def partial_fill(
 
 
 def entry_unfilled(
-    *, option: OptionKey, qty: int, cap_price: float, timeout_seconds: float,
+    *, option: OptionKey, qty: int, detail: str, timeout_seconds: float,
     jump_url: str | None, today: date | None = None,
 ) -> Notification:
-    return Notification(
+    note = Notification(
         title=f"NO FILL — {contract_label(option, today)}",
         level=Level.WARNING,
         description=(
-            f"No fill for {qty} within {timeout_seconds:.0f}s at or below {price(cap_price)}. "
-            "Not chasing."
+            f"Market order for {qty} did not fill within {timeout_seconds:.0f}s. "
+            "Nothing was bought."
         ),
         jump_url=jump_url,
     )
+    if detail:
+        note.add("Broker", detail, inline=False)
+    return note
 
 
 def trim_executed(

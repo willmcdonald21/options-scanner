@@ -90,7 +90,7 @@ async def test_an_alert_fills_and_becomes_a_managed_position(storage):
     assert has(result.notifications, "BUY")
     assert SPX_OCC in manager.managed
     (position,) = await broker.get_positions()
-    assert position.qty == 21
+    assert position.qty == 20
     assert storage.open_position_count() == 1
 
 
@@ -129,7 +129,7 @@ async def test_the_first_trim_sells_and_promotes_the_stop_to_breakeven(storage):
     assert has(notes, "TRIM +25%")
     assert has(notes, "STOP \u2192")
     state = manager.managed[SPX_OCC].state
-    assert state.remaining_qty == 10  # sold half: ceil(21*0.50) = 11
+    assert state.remaining_qty == 10  # sold half: 20 * 0.50 = 10
     assert state.stop_price == 0.48
     assert state.stop_reason == "breakeven"
     (position,) = await broker.get_positions()
@@ -196,7 +196,7 @@ async def test_a_gap_through_several_rungs_fires_each_one(storage):
     assert has(notes, "TRIM +25%")
     assert has(notes, "TRIM +50%")
     assert has(notes, "RUNNER +75%")  # above the ladder: reported, never sold
-    assert manager.managed[SPX_OCC].state.remaining_qty == 4
+    assert manager.managed[SPX_OCC].state.remaining_qty == 5
 
 
 async def test_a_rung_cannot_fire_twice(storage):
@@ -794,8 +794,9 @@ async def test_a_connection_restored_elsewhere_still_closes_the_outage(storage):
 
 # --- averaging down, end to end -----------------------------------------
 #
-# enter() fills 21 SPX 7815P at the 0.48 ask. An average-down at 0.40 then
-# buys 25 more ($1,000 / $40) and merges: 46 @ (21 x 0.48 + 25 x 0.40) / 46.
+# enter() fills 20 SPX 7815P at the 0.48 ask ($1,000 / $48). An average-down
+# at 0.40 then buys 25 more ($1,000 / $40) and merges: 45 @ (20 x 0.48 + 25 x
+# 0.40) / 45.
 
 AVG_ONE_LINE = "avg SPX 7815P 0.40"
 AVG_CARD = """AVERAGING DOWN — SPX 7815P · 0DTE
@@ -816,7 +817,7 @@ Trim Targets (new avg)
 100%  $0.880
 
 Not financial advice"""
-MERGED_ENTRY = (21 * 0.48 + 25 * 0.40) / 46
+MERGED_ENTRY = (20 * 0.48 + 25 * 0.40) / 45
 
 
 async def _average_down(pipeline, feed, text=AVG_ONE_LINE, message_id=700_002):
@@ -832,10 +833,10 @@ async def test_an_average_down_buys_more_and_merges_into_the_position(storage):
 
     assert has(result.notifications, "AVERAGED DOWN")
     state = manager.managed[SPX_OCC].state
-    assert state.remaining_qty == state.original_qty == 46
+    assert state.remaining_qty == state.original_qty == 45
     assert state.entry_fill == pytest.approx(MERGED_ENTRY)
     (position,) = await broker.get_positions()
-    assert position.qty == 46  # the broker agrees: one position, 46 contracts
+    assert position.qty == 45  # the broker agrees: one position, 45 contracts
     assert storage.open_position_count() == 1
 
 
@@ -847,7 +848,7 @@ async def test_the_full_averaging_down_card_works_the_same(storage):
 
     assert has(result.notifications, "AVERAGED DOWN")
     assert has(result.notifications, "PARSED (AVG DOWN)")
-    assert manager.managed[SPX_OCC].state.remaining_qty == 46
+    assert manager.managed[SPX_OCC].state.remaining_qty == 45
 
 
 async def test_after_averaging_down_the_ladder_trims_off_the_new_average(storage):
@@ -859,17 +860,17 @@ async def test_after_averaging_down_the_ladder_trims_off_the_new_average(storage
     notes = await manager.poll_once()
 
     assert has(notes, "TRIM +25%")
-    assert manager.managed[SPX_OCC].state.remaining_qty == 46 - 23  # half of the new 46
+    assert manager.managed[SPX_OCC].state.remaining_qty == 45 - 23  # half of the new 45, rounded up
 
 
 async def test_averaging_down_clears_a_break_even_stop_and_says_so(storage):
     """Held with a break-even stop at 0.48, the price falls to 0.40, and an
-    average-down buys there. Kept, the stop would sell all 46 on the next
+    average-down buys there. Kept, the stop would sell all 45 on the next
     quotes -- the opposite of what the trader asked for."""
     feed, _, manager, pipeline, _ = build(storage)
     await enter(pipeline, feed)
     feed.set(0.62)
-    await manager.poll_once()  # +25% trim: 11 sold, stop to break-even 0.48
+    await manager.poll_once()  # +25% trim: 10 sold, stop to break-even 0.48
     held = manager.managed[SPX_OCC].state.remaining_qty
     assert manager.managed[SPX_OCC].state.stop_price == 0.48
 
@@ -903,7 +904,7 @@ async def test_a_plain_buy_for_a_held_contract_is_still_skipped(storage):
     result = await paste(pipeline, text="SPX 7815P 0.40", message_id=700_003)
 
     assert has(result.notifications, "skipped")
-    assert manager.managed[SPX_OCC].state.remaining_qty == 21
+    assert manager.managed[SPX_OCC].state.remaining_qty == 20
 
 
 async def test_the_merged_position_survives_a_restart(storage):
@@ -918,7 +919,7 @@ async def test_the_merged_position_survives_a_restart(storage):
 
     state = reborn.managed[SPX_OCC].state
     assert mismatched is False
-    assert state.remaining_qty == state.original_qty == 46
+    assert state.remaining_qty == state.original_qty == 45
     assert state.entry_fill == pytest.approx(MERGED_ENTRY)
 
 
@@ -942,14 +943,14 @@ def _fields(card):
 
 async def test_every_trim_posts_one_pnl_card(storage):
     feed, _, manager, pipeline, _, cards = _with_pnl_channel(storage)
-    await enter(pipeline, feed)  # 21 @ 0.48
+    await enter(pipeline, feed)  # 20 @ 0.48
 
-    feed.set(0.62)  # +25%: sells 11
+    feed.set(0.62)  # +25%: sells 10
     await manager.poll_once()
 
     (card,) = cards
     assert card.title.startswith("TRIM +25%")
-    assert _fields(card) == {"Trade P&L": "+$154.00", "Day P&L": "+$154.00"}  # 11 x 0.14
+    assert _fields(card) == {"Trade P&L": "+$140.00", "Day P&L": "+$140.00"}  # 10 x 0.14
 
 
 async def test_the_day_total_accumulates_across_sales(storage):
@@ -957,13 +958,13 @@ async def test_the_day_total_accumulates_across_sales(storage):
     await enter(pipeline, feed)
 
     feed.set(0.62)
-    await manager.poll_once()   # +25%: 11 x 0.14 = +154
+    await manager.poll_once()   # +25%: 10 x 0.14 = +140
     feed.set(0.74)
-    await manager.poll_once()   # +50%: 6 x 0.26 = +156
+    await manager.poll_once()   # +50%: 5 x 0.26 = +130
 
     assert [c.title.split(" —")[0] for c in cards] == ["TRIM +25%", "TRIM +50%"]
-    assert _fields(cards[1]) == {"Trade P&L": "+$156.00", "Day P&L": "+$310.00"}
-    assert risk.day_summary(TRADING_DAY)["realized_pnl"] == pytest.approx(310.0)
+    assert _fields(cards[1]) == {"Trade P&L": "+$130.00", "Day P&L": "+$270.00"}
+    assert risk.day_summary(TRADING_DAY)["realized_pnl"] == pytest.approx(270.0)
 
 
 async def test_a_stop_out_posts_its_pnl(storage):
