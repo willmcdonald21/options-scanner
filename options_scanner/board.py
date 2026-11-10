@@ -72,6 +72,9 @@ class BoardRow:
     realized: float
     next_level: tuple[int, float] | None
     quote_age: float | None  # seconds since the last good quote; None = none yet
+    # The runner lock: how many runners trail on their own stop, and where.
+    lock_qty: int = 0
+    lock_stop: float | None = None
 
     @property
     def unrealized(self) -> float | None:
@@ -157,6 +160,8 @@ def snapshot(*, settings, storage, risk, manager=None, broker=None, now: datetim
                 realized=realized,
                 next_level=next_level(state, rules),
                 quote_age=age,
+                lock_qty=state.lock_qty,
+                lock_stop=state.lock_stop,
             )
         )
     rows.sort(key=lambda r: (r.option.expiry, r.option.ticker, r.option.strike, r.option.right))
@@ -211,6 +216,12 @@ def _row_text(row: BoardRow, snap: BoardSnapshot) -> str:
         lines[-1] += f" · realized {signed_money(row.realized)}"
 
     lines.append(f"{_stop_text(row, snap.first_stop_pct)} · peak {price(row.peak)}")
+    if row.lock_qty and row.lock_stop is not None:
+        locks = (row.lock_stop / row.entry - 1.0) * 100.0 if row.entry else 0.0
+        lines.append(
+            f"{row.lock_qty} locked runner{'s' if row.lock_qty != 1 else ''} · "
+            f"stop {price(row.lock_stop)} (locks {signed_pct(locks)})"
+        )
     if row.next_level is not None:
         level, at = row.next_level
         lines.append(f"Next +{level}% at {price(at)}")

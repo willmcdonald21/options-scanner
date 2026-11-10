@@ -112,6 +112,17 @@ def test_a_stepped_stop_says_what_it_locks_in():
     assert "Stop $1.25 (locks +25.0%)" in text
 
 
+def test_locked_runners_show_their_own_stop():
+    text = body(render_board(snap(row(stop=1.50, lock_qty=2, lock_stop=2.25)), updated_at=None))
+
+    assert "Stop $1.50 (locks +50.0%)" in text
+    assert "2 locked runners · stop $2.25 (locks +125.0%)" in text
+
+
+def test_no_lock_line_without_a_lock():
+    assert "locked" not in body(render_board(snap(row()), updated_at=None))
+
+
 def test_a_stale_quote_is_flagged_on_its_row():
     fresh = body(render_board(snap(row(quote_age=3.0)), updated_at=None))
     stale = body(render_board(snap(row(quote_age=42.0)), updated_at=None))
