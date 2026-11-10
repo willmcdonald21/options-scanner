@@ -27,10 +27,9 @@ trim:
   # contracts, 1 at each level and 2 runners.
   #
   # [profit level %, percent of the ORIGINAL position to sell]. Of the
-  # original, not of the remainder. Each trim rounds UP, which is why this is
-  # 16 and not 16.67: 6 x 0.1667 = 1.0002 rounds up to 2 contracts a trim.
-  # 6 x 0.16 = 0.96 rounds up to 1. Larger sizes sell more per level
-  # (13 -> 3 each); min_runner_contracts always leaves at least one.
+  # original, not of the remainder. Each trim rounds to the NEAREST contract
+  # (rounding below), minimum 1: 6 x 0.16 = 0.96 -> 1, 7 x 0.16 = 1.12 -> 1,
+  # 13 x 0.16 = 2.08 -> 2. min_runner_contracts always leaves at least one.
   schedule:
     - [25, 16]
     - [50, 16]
@@ -45,6 +44,9 @@ trim:
   runner_step_pct: 25
 
   min_runner_contracts: 1
+  # nearest = half up, minimum 1; up = always round up (7 contracts would
+  # sell 2 a level and keep 1 runner instead of 1 a level and 3 runners).
+  rounding: nearest
 
 trail:
   # Off: the step stops in stops.steps are the whole stop. The runners hold
