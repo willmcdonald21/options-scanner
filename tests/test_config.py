@@ -263,6 +263,19 @@ def test_trim_rounding_carries_through_to_the_rules_engine():
         make_settings(trim={"rounding": "down"})
 
 
+def test_the_runner_lock_carries_through_to_the_rules_engine():
+    assert make_settings().rules().runner_lock_at_pct is None
+
+    settings = make_settings(stops={"runner_lock": {"at_pct": 100}})
+    rules = settings.rules()
+    assert (rules.runner_lock_at_pct, rules.runner_lock_lag_pct, rules.runner_lock_step_pct) == (100, 25, 25)
+    assert rules.runner_lock_min_over_sells == 2
+    assert "lock=half the runners 25% behind from +100%" in settings.summary_line()
+
+    with pytest.raises(ValueError):
+        make_settings(stops={"runner_lock": {"lag_pct": 0}})
+
+
 def test_by_default_there_are_no_steps_and_the_trail_is_on():
     rules = make_settings().rules()
     assert rules.stop_steps == ()

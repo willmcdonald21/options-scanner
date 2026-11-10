@@ -150,6 +150,16 @@ class TrailSettings(BaseModel):
     )
 
 
+class RunnerLockSettings(BaseModel):
+    # From at_pct, half the runners (rounded down) of a position whose runners
+    # outnumber its per-level sell by min_over_sells or more trail one level
+    # behind: stop = highest step_pct step reached - lag_pct. See rules.py.
+    at_pct: int = Field(default=100, gt=0)
+    lag_pct: int = Field(default=25, gt=0)
+    step_pct: int = Field(default=25, gt=0)
+    min_over_sells: int = Field(default=2, ge=0)
+
+
 class StopSettings(BaseModel):
     # 0.0 = pure bid (what we could actually sell into), 1.0 = pure mid.
     source_blend: float = Field(default=0.0, ge=0, le=1)
@@ -174,6 +184,9 @@ class StopSettings(BaseModel):
     # replacing breakeven-on-fill when set. [] = breakeven after the first
     # trim fills. Validated in RulesConfig.
     steps: list[tuple[int, float]] = Field(default_factory=list)
+
+    # The runner lock. Absent = off.
+    runner_lock: RunnerLockSettings | None = None
 
 
 class RiskSettings(BaseModel):
@@ -389,7 +402,19 @@ class Settings(BaseModel):
             confirm_breaches=self.stops.confirm_polls,
             min_runner_contracts=self.trim.min_runner_contracts,
             trim_rounding=self.trim.rounding,
+            **self._runner_lock_rules(),
         )
+
+    def _runner_lock_rules(self) -> dict[str, int | None]:
+        lock = self.stops.runner_lock
+        if lock is None:
+            return {"runner_lock_at_pct": None}
+        return {
+            "runner_lock_at_pct": lock.at_pct,
+            "runner_lock_lag_pct": lock.lag_pct,
+            "runner_lock_step_pct": lock.step_pct,
+            "runner_lock_min_over_sells": lock.min_over_sells,
+        }
 
     def resolve_path(self, relative: str) -> Path:
         return PROJECT_ROOT / relative
@@ -450,6 +475,9 @@ class Settings(BaseModel):
                 f"+{level}%->{'BE' if locks == 0 else f'{locks:+g}%'}" for level, locks in self.stops.steps
             )
             steps = f"stops={moves} "
+        lock = self.stops.runner_lock
+        if lock is not None:
+            steps += f"lock=half the runners {lock.lag_pct}% behind from +{lock.at_pct}% "
         return (
             f"mode={self.mode.value} broker={self.broker.kind.value} trims={trims} of original "
             f"{steps}{trail}"
