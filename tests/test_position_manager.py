@@ -156,6 +156,58 @@ async def test_climbing_the_whole_ladder_arms_the_trail_and_keeps_a_runner(stora
     assert state.stop_price == 0.48
 
 
+STEP_OVERRIDES = dict(
+    trim={"schedule": [(25, 16), (50, 16), (75, 16), (100, 16)], "runner_levels": []},
+    stops={"steps": [(25, 0), (75, 25), (100, 50)]},
+    trail={"enabled": False},
+)
+
+
+def _stop_cards(notes):
+    return [n for n in notes if "STOP \u2192" in n.description]
+
+
+async def test_step_stops_move_once_per_level_after_the_trim_card(storage):
+    feed, _, manager, pipeline, _ = build(storage, **STEP_OVERRIDES)
+    await enter(pipeline, feed)  # 20 @ 0.48
+
+    feed.set(0.62)  # +29%: trim 1, stop to break-even
+    notes = await manager.poll_once()
+    state = manager.managed[SPX_OCC].state
+    assert (state.stop_price, state.stop_reason) == (0.48, "breakeven")
+    assert len(_stop_cards(notes)) == 1  # not once for the price and again for the fill
+
+    feed.set(0.74)  # +54%: trim 2, the stop holds
+    notes = await manager.poll_once()
+    assert _stop_cards(notes) == []
+    assert state.stop_price == 0.48
+
+    feed.set(0.86)  # +79%: trim 3, stop to +25% = 0.60
+    notes = await manager.poll_once()
+    (card,) = _stop_cards(notes)
+    assert "Price reached +75%" in card.description
+    assert notes.index(card) > next(i for i, n in enumerate(notes) if has([n], "TRIM +75%"))
+    assert state.stop_price == 0.60
+
+    feed.set(0.98)  # +104%: trim 4, stop to +50% = 0.72
+    await manager.poll_once()
+    feed.set(2.00)  # the runners climb; the stop stays
+    notes = await manager.poll_once()
+    assert state.stop_price == 0.72
+    assert state.trail_armed is False
+    assert state.remaining_qty == 4  # 20 - 4 x ceil(20 x 0.16)
+
+
+async def test_the_runners_stop_out_at_the_plus_50_step(storage):
+    feed, broker, manager, pipeline, _ = build(storage, **STEP_OVERRIDES)
+    await enter(pipeline, feed)
+    for bid in (0.62, 0.74, 0.86, 0.98, 0.71, 0.70):
+        feed.set(bid)
+        await manager.poll_once()
+    assert SPX_OCC not in manager.managed
+    assert await broker.get_positions() == []
+
+
 async def test_the_runner_levels_sell_nothing_and_are_each_reported(storage):
     feed, _, manager, pipeline, _ = build(storage)
     await enter(pipeline, feed)

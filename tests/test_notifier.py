@@ -414,3 +414,20 @@ def test_signed_money_always_carries_a_sign():
     assert signed_money(0.0) == "+$0.00"
     assert signed_money(1234.5) == "+$1,234.50"
     assert signed_money(-7.25) == "-$7.25"
+
+
+def test_a_step_stop_card_names_the_level_that_moved_it():
+    step = stop_moved(
+        option=OPT, old=1.00, new=1.25, reason="trail", remaining=3,
+        level_pct=75, locks_pct=25, today=TODAY,
+    )
+    assert "Price reached +75%" in step.description
+    assert "stop raised to $1.25 (+25%)" in step.description
+    assert "The remaining 3 lock in at least +25%" in step.description
+    assert "new peak" not in step.description
+
+    be = stop_moved(
+        option=OPT, old=None, new=1.00, reason="breakeven", remaining=5,
+        level_pct=25, locks_pct=0, today=TODAY,
+    )
+    assert "Price reached +25% — stop moved to break-even" in be.description

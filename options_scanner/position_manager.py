@@ -479,6 +479,8 @@ class PositionManager:
                     reason=action.reason,
                     remaining=state.remaining_qty,
                     jump_url=managed.jump_url,
+                    level_pct=action.level_pct,
+                    locks_pct=action.locks_pct,
                 )
             )
             return

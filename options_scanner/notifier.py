@@ -528,7 +528,11 @@ def trim_executed(
 def stop_moved(
     *, option: OptionKey, old: float | None, new: float, reason: str, remaining: int = 0,
     jump_url: str | None = None, today: date | None = None,
+    level_pct: int | None = None, locks_pct: float | None = None,
 ) -> Notification:
+    """`level_pct`/`locks_pct` are set by a step stop: the level the price
+    reached and the gain the new stop locks in. The card then says which
+    level moved it rather than calling it a peak trail."""
     was = price(old) if old is not None else "none"
     explanation = {
         "breakeven": (
@@ -537,6 +541,18 @@ def stop_moved(
         ),
         "trail": "Trailing stop ratcheted up with a new peak.",
     }.get(reason, reason)
+    if level_pct is not None and locks_pct is not None:
+        held = f"The remaining {remaining}" if remaining else "This position"
+        if locks_pct == 0:
+            explanation = (
+                f"Price reached +{level_pct}% — stop moved to break-even. "
+                f"{held} can no longer lose money."
+            )
+        else:
+            explanation = (
+                f"Price reached +{level_pct}% — stop raised to {price(new)} ({locks_pct:+g}%). "
+                f"{held} {'lock' if remaining else 'locks'} in at least {locks_pct:+g}%."
+            )
     # Same layout as the runner card: the contract heads it, the event under.
     note = Notification(
         title=contract_label(option, today),
