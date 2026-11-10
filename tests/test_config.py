@@ -409,6 +409,56 @@ def test_the_pnl_webhook_token_never_reaches_a_log(monkeypatch):
     assert "123456789" in dumped["discord"]["pnl_webhook_url"]
 
 
+# --- the positions board ---------------------------------------------------
+
+BOARD_HOOK = "https://discord.com/api/webhooks/987654321/board-secret-token"
+
+
+def test_the_positions_webhook_is_read_from_the_environment(monkeypatch):
+    env(monkeypatch)
+    monkeypatch.setenv("POSITIONS_WEBHOOK_URL", BOARD_HOOK)
+
+    settings = load_settings(load_env=False)
+
+    assert settings.discord.posts_board
+    assert settings.discord.positions_webhook_url == BOARD_HOOK
+
+
+def test_without_it_there_is_no_board(monkeypatch):
+    env(monkeypatch)
+    monkeypatch.delenv("POSITIONS_WEBHOOK_URL", raising=False)
+
+    assert not load_settings(load_env=False).discord.posts_board
+
+
+def test_the_positions_webhook_token_never_reaches_a_log(monkeypatch):
+    env(monkeypatch)
+    monkeypatch.setenv("POSITIONS_WEBHOOK_URL", BOARD_HOOK)
+
+    dumped = load_settings(load_env=False).redacted()
+
+    assert "board-secret-token" not in str(dumped)
+    assert "987654321" in dumped["discord"]["positions_webhook_url"]
+
+
+def test_the_committed_config_refreshes_the_board_every_2_seconds(monkeypatch):
+    env(monkeypatch)
+    board = load_settings(load_env=False).board
+
+    assert board.refresh_seconds == 2
+    assert board.idle_refresh_seconds == 60
+
+
+def test_the_board_cannot_refresh_faster_than_the_price_poll():
+    import pytest
+    from pydantic import ValidationError
+
+    from options_scanner.config import BoardSettings
+
+    with pytest.raises(ValidationError):
+        BoardSettings(refresh_seconds=0.5)
+
+
 def test_the_committed_config_reports_the_runner_every_25_percent(monkeypatch):
     env(monkeypatch)
     rules = load_settings(load_env=False).rules()

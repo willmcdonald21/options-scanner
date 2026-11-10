@@ -76,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"open      : {storage.open_position_count()} position(s)")
         print(f"alerts ch : {settings.discord.alerts_channel_id}")
         print(f"updates ch: {settings.discord.updates_channel_id}")
+        print(f"board     : {board_line(settings)}")
         storage.close()
         return 0
 
@@ -91,6 +92,18 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         storage.close()
     return 0
+
+
+def board_line(settings: Settings) -> str:
+    """The positions board for --check. The URL is a credential: only its id."""
+    if not settings.discord.posts_board:
+        return "off (no POSITIONS_WEBHOOK_URL)"
+    from options_scanner.webhook import redact
+
+    return (
+        f"{redact(settings.discord.positions_webhook_url)} every "
+        f"{settings.board.refresh_seconds:g}s ({settings.board.idle_refresh_seconds:g}s idle)"
+    )
 
 
 def build_broker(settings: Settings) -> Broker | None:

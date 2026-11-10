@@ -161,6 +161,13 @@ broker:
   # Find it with: .venv/bin/python scripts/ib_probe.py
   account: ""
 
+board:
+  # The positions board: one message in its own channel, edited in place.
+  # Only runs when POSITIONS_WEBHOOK_URL is set in .env.
+  refresh_seconds: 2          # while positions are open in the session
+  idle_refresh_seconds: 60    # nothing open or market closed; also the longest
+                              # an unchanged board goes without an edit
+
 storage:
   db_path: data/options_scanner.sqlite3
 

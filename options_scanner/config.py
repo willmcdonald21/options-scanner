@@ -63,6 +63,10 @@ class DiscordSettings(BaseModel):
     # P&L and the day's total, nothing else. Blank = no P&L cards.
     pnl_webhook_url: str = ""
 
+    # Optional. A channel holding one message, edited in place, that always
+    # shows the open positions. Blank = no positions board.
+    positions_webhook_url: str = ""
+
     @property
     def posts_via_webhook(self) -> bool:
         return bool(self.updates_webhook_url.strip())
@@ -70,6 +74,10 @@ class DiscordSettings(BaseModel):
     @property
     def posts_pnl(self) -> bool:
         return bool(self.pnl_webhook_url.strip())
+
+    @property
+    def posts_board(self) -> bool:
+        return bool(self.positions_webhook_url.strip())
 
     @model_validator(mode="after")
     def _channels_must_differ(self) -> "DiscordSettings":
@@ -285,6 +293,15 @@ class BrokerSettings(BaseModel):
     LIVE_PORTS: tuple[int, ...] = (4001, 7496)
 
 
+class BoardSettings(BaseModel):
+    # How often the positions board is refreshed while positions are open in
+    # the session. No faster than the price poll: it would show nothing new.
+    refresh_seconds: float = Field(default=2.0, ge=1.5, le=300)
+    # Otherwise (nothing open, or outside the session), and also the longest
+    # an unchanged board goes without an edit.
+    idle_refresh_seconds: float = Field(default=60.0, ge=5, le=3600)
+
+
 class StorageSettings(BaseModel):
     db_path: str = "data/options_scanner.sqlite3"
 
@@ -310,6 +327,7 @@ class Settings(BaseModel):
     risk: RiskSettings = Field(default_factory=RiskSettings)
     market: MarketSettings = Field(default_factory=MarketSettings)
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
+    board: BoardSettings = Field(default_factory=BoardSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
@@ -391,6 +409,10 @@ class Settings(BaseModel):
             from options_scanner.webhook import redact
 
             data["discord"]["pnl_webhook_url"] = redact(self.discord.pnl_webhook_url)
+        if data["discord"].get("positions_webhook_url"):
+            from options_scanner.webhook import redact
+
+            data["discord"]["positions_webhook_url"] = redact(self.discord.positions_webhook_url)
         return data
 
     def _sizing_summary(self) -> str:
@@ -454,6 +476,7 @@ def _discord_from_env() -> dict[str, Any]:
         "owner_user_id": int(os.environ["OWNER_USER_ID"]),
         "updates_webhook_url": os.environ.get("UPDATES_WEBHOOK_URL", ""),
         "pnl_webhook_url": os.environ.get("PNL_WEBHOOK_URL", ""),
+        "positions_webhook_url": os.environ.get("POSITIONS_WEBHOOK_URL", ""),
     }
 
 
