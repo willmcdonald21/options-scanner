@@ -19,7 +19,13 @@ from options_scanner.notifier import (
     stopped_out,
     trim_executed,
 )
-from options_scanner.webhook import WebhookError, WebhookNotifier, looks_like_webhook, redact
+from options_scanner.webhook import (
+    EditResult,
+    WebhookError,
+    WebhookNotifier,
+    looks_like_webhook,
+    redact,
+)
 
 OPT = OptionKey("SPX", date(2026, 10, 6), 7815.0, "P")
 TODAY = date(2026, 10, 6)
@@ -236,6 +242,37 @@ async def test_a_message_post_answered_without_a_body_returns_no_id():
     session = FakeSession(posts=[FakeResponse(204)])
 
     assert await notifier(session).post_message([{"title": "x"}]) is None
+
+
+async def test_an_edit_patches_that_message():
+    session = FakeSession(posts=[FakeResponse(200, {"id": "777"})])
+
+    result = await notifier(session).edit_message("777", [{"title": "Open positions"}])
+
+    assert result is EditResult.OK
+    ((method, url, payload),) = session.calls
+    assert (method, url) == ("PATCH", f"{URL}/messages/777")
+    assert payload == {"embeds": [{"title": "Open positions"}], "allowed_mentions": {"parse": []}}
+
+
+async def test_editing_a_deleted_message_says_it_is_missing():
+    """So the caller posts a new one rather than editing a ghost forever."""
+    session = FakeSession(posts=[FakeResponse(404, text="Unknown Message")])
+
+    assert await notifier(session).edit_message("777", [{"title": "x"}]) is EditResult.MISSING
+
+
+async def test_a_failed_edit_never_raises():
+    session = FakeSession(posts=[FakeResponse(500, text="oops")])
+
+    assert await notifier(session).edit_message("777", [{"title": "x"}]) is EditResult.FAILED
+
+
+async def test_a_rate_limited_edit_is_retried():
+    session = FakeSession(posts=[FakeResponse(429, {"retry_after": 0.01}), FakeResponse(200, {"id": "777"})])
+
+    assert await notifier(session).edit_message("777", [{"title": "x"}]) is EditResult.OK
+    assert [c[0] for c in session.calls] == ["PATCH", "PATCH"]
 
 
 async def test_closing_closes_the_session():

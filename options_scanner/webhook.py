@@ -20,6 +20,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 import aiohttp
@@ -49,6 +50,14 @@ class _Reply:
     @property
     def ok(self) -> bool:
         return self.status in (200, 204)
+
+
+class EditResult(str, Enum):
+    """How an edit of a posted message went."""
+
+    OK = "ok"
+    MISSING = "missing"   # the message is gone (deleted by hand): post a new one
+    FAILED = "failed"     # anything else: try again next time
 
 
 class WebhookError(RuntimeError):
@@ -204,3 +213,22 @@ class WebhookNotifier:
             logger.error("webhook message post failed: HTTP %s %s", reply.status, reply.body)
             return None
         return str(message_id)
+
+    async def edit_message(self, message_id: str, embeds: list[dict]) -> EditResult:
+        """Replace the embeds of a message this webhook posted.
+
+        A 404 is MISSING rather than FAILED: the message was deleted, and the
+        caller should post a new one instead of editing a ghost forever.
+        Never raises.
+        """
+        payload = {"embeds": embeds, "allowed_mentions": {"parse": []}}
+        reply = await self._request(
+            "patch", f"{self.url}/messages/{message_id}", payload, what="board edit"
+        )
+        if reply.ok:
+            return EditResult.OK
+        if reply.status == 404:
+            logger.warning("webhook message %s is gone; a new one will be posted", message_id)
+            return EditResult.MISSING
+        logger.error("webhook message edit failed: HTTP %s %s", reply.status, reply.body)
+        return EditResult.FAILED
