@@ -181,6 +181,15 @@ class PositionState:
     consecutive_breaches: int = 0
     closed: bool = False
 
+    # The runner lock: on a big enough position, part of the runners trail
+    # one level behind the price from +100% (see rules.py). `lock_armed`
+    # stays True once the lock has fired so it never re-arms after the
+    # locked runners stop out.
+    lock_armed: bool = False
+    lock_qty: int = 0
+    lock_stop: float | None = None
+    lock_breaches: int = 0
+
     @property
     def is_protected(self) -> bool:
         """False between the entry fill and the first trim filling. By design

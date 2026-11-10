@@ -295,3 +295,52 @@ def test_an_average_down_survives_a_restart(storage):
     assert reloaded.remaining_qty == 3
     assert reloaded.stop_price is None
     assert reloaded.fired_levels == frozenset()
+
+
+# --- the runner lock --------------------------------------------------------
+
+
+def test_the_runner_lock_round_trips(storage):
+    _seed_alert(storage)
+    state = _state(
+        remaining_qty=5,
+        peak_bid=2.30,
+        stop_price=1.50,
+        stop_reason="trail",
+        fired_levels=frozenset({25, 50, 75, 100}),
+        lock_armed=True,
+        lock_qty=2,
+        lock_stop=2.00,
+        lock_breaches=1,
+    )
+    position_id = storage.create_position(1, state)
+    storage.save_position(position_id, state)
+
+    (_, loaded), = storage.open_positions()
+    assert states_equal(state, loaded)
+    assert (loaded.lock_armed, loaded.lock_qty, loaded.lock_stop, loaded.lock_breaches) == (
+        True, 2, 2.00, 1,
+    )
+
+
+def test_an_older_database_gains_the_lock_columns(tmp_path):
+    """The live database predates the runner lock. Opening it must add the
+    columns in place, keep its rows, and load them with the lock off."""
+    import sqlite3
+
+    path = tmp_path / "old.sqlite3"
+    Storage(path).close()
+    conn = sqlite3.connect(path)
+    for column in ("lock_armed", "lock_qty", "lock_stop", "lock_breaches"):
+        conn.execute(f"ALTER TABLE positions DROP COLUMN {column}")
+    conn.commit()
+    conn.close()
+
+    old = Storage(path)
+    try:
+        _seed_alert(old)
+        old.create_position(1, _state())
+        (_, loaded), = old.open_positions()
+        assert (loaded.lock_armed, loaded.lock_qty, loaded.lock_stop) == (False, 0, None)
+    finally:
+        old.close()

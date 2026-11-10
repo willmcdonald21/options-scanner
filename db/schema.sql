@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS positions (
     trail_armed INTEGER NOT NULL DEFAULT 0,
     fired_levels TEXT NOT NULL DEFAULT '[]',
     consecutive_breaches INTEGER NOT NULL DEFAULT 0,
+    -- The runner lock. Also added to an older database by Storage.__init__.
+    lock_armed INTEGER NOT NULL DEFAULT 0,
+    lock_qty INTEGER NOT NULL DEFAULT 0,
+    lock_stop REAL,
+    lock_breaches INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'CLOSED')),
     realized_pnl REAL NOT NULL DEFAULT 0.0,
     opened_at TEXT NOT NULL DEFAULT (datetime('now')),

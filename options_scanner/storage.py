@@ -43,7 +43,23 @@ class Storage:
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.executescript(_SCHEMA_PATH.read_text())
+        self._add_missing_columns()
         self._conn.commit()
+
+    # Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves
+    # an existing table alone, so a database made before them gets them here.
+    _ADDED_POSITION_COLUMNS: tuple[tuple[str, str], ...] = (
+        ("lock_armed", "INTEGER NOT NULL DEFAULT 0"),
+        ("lock_qty", "INTEGER NOT NULL DEFAULT 0"),
+        ("lock_stop", "REAL"),
+        ("lock_breaches", "INTEGER NOT NULL DEFAULT 0"),
+    )
+
+    def _add_missing_columns(self) -> None:
+        have = {row["name"] for row in self._conn.execute("PRAGMA table_info(positions)")}
+        for name, decl in self._ADDED_POSITION_COLUMNS:
+            if name not in have:
+                self._conn.execute(f"ALTER TABLE positions ADD COLUMN {name} {decl}")
 
     def close(self) -> None:
         self._conn.close()
@@ -141,8 +157,9 @@ class Storage:
             """INSERT INTO positions
                  (alert_message_id, occ_symbol, ticker, expiry, strike, right, entry_fill,
                   original_qty, remaining_qty, peak_bid, stop_price, stop_reason,
-                  trail_armed, fired_levels, consecutive_breaches, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')""",
+                  trail_armed, fired_levels, consecutive_breaches,
+                  lock_armed, lock_qty, lock_stop, lock_breaches, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')""",
             (
                 alert_message_id,
                 state.option.occ_symbol,
@@ -159,6 +176,10 @@ class Storage:
                 int(state.trail_armed),
                 json.dumps(sorted(state.fired_levels)),
                 state.consecutive_breaches,
+                int(state.lock_armed),
+                state.lock_qty,
+                state.lock_stop,
+                state.lock_breaches,
             ),
         )
         self._conn.commit()
@@ -177,6 +198,7 @@ class Storage:
                  entry_fill = ?, original_qty = ?,
                  remaining_qty = ?, peak_bid = ?, stop_price = ?, stop_reason = ?,
                  trail_armed = ?, fired_levels = ?, consecutive_breaches = ?,
+                 lock_armed = ?, lock_qty = ?, lock_stop = ?, lock_breaches = ?,
                  status = ?, realized_pnl = ?,
                  closed_at = CASE WHEN ? = 'CLOSED' AND closed_at IS NULL
                                   THEN datetime('now') ELSE closed_at END,
@@ -192,6 +214,10 @@ class Storage:
                 int(state.trail_armed),
                 json.dumps(sorted(state.fired_levels)),
                 state.consecutive_breaches,
+                int(state.lock_armed),
+                state.lock_qty,
+                state.lock_stop,
+                state.lock_breaches,
                 "CLOSED" if state.closed else "OPEN",
                 realized_pnl,
                 "CLOSED" if state.closed else "OPEN",
@@ -401,6 +427,10 @@ def _row_to_state(row: sqlite3.Row) -> PositionState:
         fired_levels=frozenset(json.loads(row["fired_levels"])),
         consecutive_breaches=row["consecutive_breaches"],
         closed=row["status"] == "CLOSED",
+        lock_armed=bool(row["lock_armed"]),
+        lock_qty=row["lock_qty"],
+        lock_stop=row["lock_stop"],
+        lock_breaches=row["lock_breaches"],
     )
 
 
@@ -414,6 +444,7 @@ def states_equal(left: PositionState, right: PositionState) -> bool:
     fields = (
         "entry_fill", "original_qty", "remaining_qty", "peak_bid", "stop_price",
         "stop_reason", "trail_armed", "fired_levels", "consecutive_breaches", "closed",
+        "lock_armed", "lock_qty", "lock_stop", "lock_breaches",
     )
     return left.option == right.option and all(
         getattr(left, name) == getattr(right, name) for name in fields
