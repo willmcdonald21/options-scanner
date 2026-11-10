@@ -51,6 +51,7 @@ class FakeSession:
                                               "channel_id": "1552390101680525395"})
         self._posts = list(posts or [FakeResponse(204)])
         self.posted: list[dict] = []
+        self.calls: list[tuple[str, str, dict]] = []
         self.closed = False
 
     def get(self, url):
@@ -58,7 +59,12 @@ class FakeSession:
 
     def post(self, url, json=None):
         self.posted.append(json)
+        self.calls.append(("POST", url, json))
         return self._posts.pop(0) if self._posts else FakeResponse(204)
+
+    def patch(self, url, json=None):
+        self.calls.append(("PATCH", url, json))
+        return self._posts.pop(0) if self._posts else FakeResponse(200, {"id": "1"})
 
     async def close(self):
         self.closed = True
@@ -202,6 +208,34 @@ async def test_a_transport_error_is_retried_then_given_up_on():
     session = Broken()
     assert await notifier(session).post(Notification(title="x")) is False
     assert len(session.posted) == 3  # _MAX_ATTEMPTS
+
+
+# --- a message that is edited in place ----------------------------------
+
+
+async def test_posting_a_message_waits_for_it_and_returns_its_id():
+    """Without ?wait=true Discord answers 204 and there is no id to edit."""
+    session = FakeSession(posts=[FakeResponse(200, {"id": "777", "channel_id": "5"})])
+
+    message_id = await notifier(session).post_message([{"title": "Open positions"}])
+
+    assert message_id == "777"
+    ((method, url, payload),) = session.calls
+    assert (method, url) == ("POST", f"{URL}?wait=true")
+    assert payload["embeds"] == [{"title": "Open positions"}]
+    assert payload["allowed_mentions"] == {"parse": []}
+
+
+async def test_a_message_post_that_fails_returns_no_id():
+    session = FakeSession(posts=[FakeResponse(400, text="bad embed")])
+
+    assert await notifier(session).post_message([{"title": "x"}]) is None
+
+
+async def test_a_message_post_answered_without_a_body_returns_no_id():
+    session = FakeSession(posts=[FakeResponse(204)])
+
+    assert await notifier(session).post_message([{"title": "x"}]) is None
 
 
 async def test_closing_closes_the_session():

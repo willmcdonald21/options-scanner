@@ -189,3 +189,18 @@ class WebhookNotifier:
                     return _Reply(None)
                 await asyncio.sleep(0.5 * attempt)
         return _Reply(429)
+
+    async def post_message(self, embeds: list[dict]) -> str | None:
+        """Post a message and return its id, so it can be edited later.
+
+        `?wait=true` makes Discord answer with the created message instead of
+        an empty 204. Never pings anyone. Never raises: None means it did not
+        land, and the log says why.
+        """
+        payload = {"username": self.username, "embeds": embeds, "allowed_mentions": {"parse": []}}
+        reply = await self._request("post", f"{self.url}?wait=true", payload, what="board post")
+        message_id = reply.body.get("id") if reply.ok and isinstance(reply.body, dict) else None
+        if message_id is None:
+            logger.error("webhook message post failed: HTTP %s %s", reply.status, reply.body)
+            return None
+        return str(message_id)
