@@ -107,6 +107,10 @@ class RulesConfig:
     # reports only runner_levels.
     runner_step_pct: int | None = None
 
+    # The peak trail (rules 5 and 6). Off = it never arms, and the step
+    # stops (or breakeven) are the only stop.
+    trail_enabled: bool = True
+
     # The level at which the trailing stop starts working.
     trail_arm_pct: int = 75
 
@@ -491,8 +495,12 @@ def evaluate(state: PositionState, bid: float, config: RulesConfig | None = None
             )
 
     # 5. Arm the trail.
-    armed = state.trail_armed
-    if not armed and bid >= level_price(state.entry_fill, config.trail_arm_pct):
+    armed = state.trail_armed and config.trail_enabled
+    if (
+        config.trail_enabled
+        and not armed
+        and bid >= level_price(state.entry_fill, config.trail_arm_pct)
+    ):
         armed = True
         actions.append(ArmTrail(at_price=bid))
 

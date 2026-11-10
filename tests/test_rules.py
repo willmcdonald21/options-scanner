@@ -948,3 +948,24 @@ def test_no_steps_keeps_breakeven_on_fill():
 def test_bad_stop_steps_are_rejected(steps):
     with pytest.raises(ValueError):
         RulesConfig(stop_steps=steps)
+
+
+def test_with_the_trail_off_the_runners_keep_the_plus_50_stop():
+    cfg = RulesConfig(
+        trim_schedule=STEP_CFG.trim_schedule,
+        runner_levels=(),
+        stop_steps=STEPS,
+        trail_enabled=False,
+    )
+    result = walk([1.25, 1.50, 1.75, 2.00, 3.00, 6.00, 10.00], _state(1.00, 6), cfg)
+    assert not result.armed
+    assert result.stop_prices == [1.00, 1.25, 1.50]
+    assert result.state.stop_price == 1.50
+    assert result.state.remaining_qty == 2
+
+
+def test_the_trail_off_ignores_an_armed_flag_restored_from_storage():
+    state = _state(1.00, 6)
+    state.trail_armed = True
+    result = walk([3.00], state, RulesConfig(trail_enabled=False))
+    assert all(s.reason != "trail" for s in result.stops)
