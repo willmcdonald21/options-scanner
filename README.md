@@ -216,7 +216,7 @@ python3.11 -m venv .venv
 
 ```bash
 cp .env.example .env
-$EDITOR .env          # token and the three IDs
+$EDITOR .env          # token and the three IDs; optional webhooks for P&L and the board
 $EDITOR config.yaml   # sizing, caps, cutoff
 ```
 
@@ -387,6 +387,48 @@ counts. Both are before commissions. Green for a gain, red for a loss, and
 never a ping. If the webhook fails its startup check, P&L cards switch off, a
 warning goes to updates, and trading carries on.
 
+### The positions board
+
+Optional. Set `POSITIONS_WEBHOOK_URL` in `.env` to a webhook in a channel of
+its own (Channel → Edit Channel → Integrations → Webhooks → New Webhook; it
+can be in another server) and the bot keeps **one message** there, edited in
+place, that always shows what is open:
+
+```
+Open positions
+Day P&L +$206.00 · realized +$80.00 · open +$126.00
+`paper` · broker connected · taking entries
+market open, 214 min to 16:00 ET close
+Updated 11:00:05 (2 seconds ago)
+
+SPY 772C · 0DTE
++42.0% · bid $1.42 · entry $1.00
+Open P&L +$126.00 on 3 of 6 · realized +$50.00
+Stop $1.00 (break-even) · peak $1.55
+Next +50% at $1.50
+```
+
+- **Open P&L is valued on the bid**, the price the stops judge against and
+  what the position would actually sell for.
+- **It refreshes every 2 seconds** while positions are open in the session
+  (`board.refresh_seconds`). At other times it changes only when something
+  does, plus a heartbeat every 60 seconds (`board.idle_refresh_seconds`).
+- **"Updated … ago" is the liveness check.** Discord keeps that counter
+  ticking on its own, so a board whose bot has died visibly ages ("14 minutes
+  ago") instead of passing for live. On a clean stop (including
+  `ops.sh stop`/`restart`) the board turns grey and says **Bot offline**,
+  with how many positions are left with no stop.
+- It reads what the position manager already polled, so it makes **no quote
+  requests of its own**, and it runs as its own task: a slow Discord costs the
+  board, never a stop.
+- A restart edits the same message. Delete it and a new one is posted.
+  Commands still go in updates; the board channel is read-only.
+
+Yellow means a health problem (broker down, entries halted), grey means nothing
+is open, otherwise green or red for the day. It never pings. If the webhook
+fails its startup check, or points at the alerts or updates channel, the board
+switches off with a warning in updates and trading carries on.
+
 ### Posting transport
 
 Set `UPDATES_WEBHOOK_URL` in `.env` and updates go through that webhook, which
@@ -447,6 +489,7 @@ options_scanner/
   market_hours.py    America/New_York sessions, holidays, early closes
   storage.py         SQLite audit trail, dedup, restart state
   notifier.py        notification builders (colours, pings, jump links)
+  board.py           the positions board: one message, edited in place
   execution.py       market orders in, marketable limits out
   position_manager.py the polling loop that drives the rules against quotes
   pipeline.py        the alert path, testable without Discord
