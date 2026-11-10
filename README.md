@@ -130,6 +130,35 @@ Small positions run out of contracts before the ladder does, but the step
 stops still apply to whatever is left. `rounding: up` sells more per level
 instead (7 contracts → 2 each, 1 runner).
 
+#### The runner lock
+
+When the runners outnumber the per-level sell by **2 or more**, half of them
+(rounded down) get their own stop at +100% that trails **one level** behind the
+price, with no upper end (`stops.runner_lock`). The other runners keep +50%.
+
+| Price reaches | Locked runners' stop | Other runners' stop |
+|---|---|---|
+| +100% ($2.00) | +75% ($1.75) | +50% ($1.50) |
+| +125% ($2.25) | +100% ($2.00) | +50% |
+| +150% ($2.50) | +125% ($2.25) | +50% |
+| every +25% after | one level behind | +50% |
+
+| Contracts | Sell per level | Runners | Locked | Others |
+|---|---|---|---|---|
+| 1–6, 10, 11, 16 | — | — | none | all |
+| 7 / 8 / 9 | 1 | 3 / 4 / 5 | 1 / 2 / 2 | 2 / 2 / 3 |
+| 12 / 13 | 2 | 4 / 5 | 2 / 2 | 2 / 3 |
+| 14 / 15 | 2 | 6 / 7 | 3 / 3 | 3 / 4 |
+| 17 | 3 | 5 | 2 | 3 |
+| 20 | 3 | 8 | 4 | 4 |
+| 50 | 8 | 18 | 9 | 9 |
+
+9 contracts at $1.00 that peak at $2.50 and fall back: the trims bank $250, the
+2 locked runners sell at $2.25 (+$250), the other 3 at $1.50 (+$150) — about
++$650 on $900. The locked stop has its own 2-quote confirmation and its own
+SOLD LOCKED card; a drop through both stops at once sells everything in one
+order. The lock fires once per position and survives a restart.
+
 The stop only ever moves up. There is **no stop before +25%** — that window is
 unprotected by design, and `!flatten` plus the daily loss limit are the only
 brakes on it.
