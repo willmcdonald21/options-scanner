@@ -584,13 +584,13 @@ paper account still returns `Error 354`.
 - **The bot must stay running.** The stop exists only in this process. If the
   machine sleeps, loses network, or the process dies, an open position has no
   stop. Disable sleep during market hours and run it under a supervisor.
-- **No stop until the first trim fills.** A position that never reaches +25% has
-  no protection at all.
+- **No stop until +25% is reached.** A position that never gets there has no
+  protection at all.
 - **A 1-contract position never trims**, because it cannot without breaking the
-  runner, so it never earns a breakeven stop the usual way. It gets one when
-  the trail arms at +75% (the trail's floor), which leaves it unprotected from
-  entry to +75%. This matters most with `max_contracts_per_trade: 1`, and at a
-  3% unit on a five-figure account most alerts size well above one contract.
+  runner. The step stops are driven by the price, so it still moves to
+  break-even at +25%, +25% at +75% and +50% at +100%. (With `stops.steps`
+  empty, breakeven waits for a trim fill and a 1-contract position goes
+  unprotected until the peak trail arms.)
 - **A market entry can pay more than the buffer.** The 15% check runs on the
   quote just before the order goes out. Once sent, a market order pays
   whatever the book asks, so on a thin or fast 0DTE book the fill can land
