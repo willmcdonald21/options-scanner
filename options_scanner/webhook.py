@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
+from typing import Any
 
 import aiohttp
 
@@ -34,6 +36,19 @@ _TIMEOUT = aiohttp.ClientTimeout(total=10)
 # Discord rate-limits webhooks per channel. A 429 carries retry_after; anything
 # else is not worth retrying more than once.
 _MAX_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class _Reply:
+    """What one webhook request came back with. `status` None means no
+    answer at all: every attempt failed in transport."""
+
+    status: int | None
+    body: Any = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status in (200, 204)
 
 
 class WebhookError(RuntimeError):
@@ -123,12 +138,28 @@ class WebhookNotifier:
             payload["content"] = f"<@{self.owner_user_id}>"
             payload["allowed_mentions"] = {"users": [str(self.owner_user_id)]}
 
+        reply = await self._request("post", self.url, payload, what=note.to_text())
+        if reply.ok:
+            return True
+        if reply.status is not None and reply.status != 429:
+            logger.error(
+                "webhook post failed: HTTP %s %s (notification: %s)",
+                reply.status, reply.body, note.to_text(),
+            )
+        return False
+
+    async def _request(self, method: str, url: str, payload: dict, *, what: str) -> _Reply:
+        """Send one request, retrying a rate limit or a dropped connection.
+
+        Never raises. Any other answer is returned as it came, for the caller
+        to judge: a 404 means something different to an edit than to a post.
+        `what` names the request in the log if it is given up on.
+        """
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
                 session = await self._get_session()
-                async with session.post(self.url, json=payload) as response:
-                    if response.status in (200, 204):
-                        return True
+                send = getattr(session, method)
+                async with send(url, json=payload) as response:
                     if response.status == 429:
                         retry_after = 1.0
                         try:
@@ -142,16 +173,19 @@ class WebhookNotifier:
                         )
                         await asyncio.sleep(min(retry_after, 5.0))
                         continue
-                    body = (await response.text())[:200]
-                    logger.error(
-                        "webhook post failed: HTTP %s %s (notification: %s)",
-                        response.status, body, note.to_text(),
-                    )
-                    return False
+                    if response.status == 200:
+                        try:
+                            body = await response.json()
+                        except Exception:
+                            body = None
+                        return _Reply(200, body)
+                    if response.status == 204:
+                        return _Reply(204)
+                    return _Reply(response.status, (await response.text())[:200])
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                logger.warning("webhook post attempt %s failed: %s", attempt, exc)
+                logger.warning("webhook %s attempt %s failed: %s", method, attempt, exc)
                 if attempt == _MAX_ATTEMPTS:
-                    logger.error("giving up on notification: %s", note.to_text())
-                    return False
+                    logger.error("giving up on webhook %s: %s", method, what)
+                    return _Reply(None)
                 await asyncio.sleep(0.5 * attempt)
-        return False
+        return _Reply(429)
