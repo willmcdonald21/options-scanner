@@ -116,6 +116,18 @@ async def test_an_unfillable_entry_opens_no_position(storage):
     assert has(result.notifications, "skipped")
 
 
+async def test_each_poll_keeps_the_last_bid_and_ask(storage):
+    """The positions board reads these instead of asking for quotes itself."""
+    feed, _, manager, pipeline, _ = build(storage)
+    await enter(pipeline, feed)
+
+    feed.set(0.52, 0.54)
+    await manager.poll_once()
+
+    managed = manager.managed[SPX_OCC]
+    assert (managed.last_bid, managed.last_ask) == (0.52, 0.54)
+
+
 # --- the ladder, live -----------------------------------------------------
 
 
@@ -627,6 +639,20 @@ async def test_an_outage_is_announced_once_not_every_poll(storage):
 
     assert titles(first) == ["Broker disconnected"]
     assert not any(n.title == "Broker disconnected" for n in later)
+
+
+async def test_the_outage_length_is_known_and_clears_on_reconnect(storage):
+    _, broker, manager, _, clock, _ = _outage(storage, reconnects=True)
+    assert manager.outage_seconds() is None
+
+    await _drop(broker)
+    await manager.poll_once()
+    clock.now += 4.5
+    assert manager.outage_seconds() == 4.5
+
+    clock.now += 10.0  # past the first retry, which reconnects
+    await manager.poll_once()
+    assert manager.outage_seconds() is None
 
 
 async def test_with_nothing_open_an_outage_is_a_warning_not_a_ping(storage):

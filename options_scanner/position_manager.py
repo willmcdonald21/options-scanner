@@ -106,6 +106,10 @@ class Managed:
     jump_url: str | None = None
     realized: float = 0.0
     last_good_quote: datetime | None = None
+    # The last quote seen, for the positions board: it shows what the stops
+    # see, without asking the broker for quotes of its own.
+    last_bid: float | None = None
+    last_ask: float | None = None
     stale_warned: bool = False
     phantom_warned: bool = False
 
@@ -260,6 +264,12 @@ class PositionManager:
     def stop(self) -> None:
         self._running = False
 
+    def outage_seconds(self) -> float | None:
+        """How long the broker has been unreachable, or None while connected."""
+        if self._outage is None:
+            return None
+        return self._monotonic() - self._outage.started
+
     async def poll_once(self) -> list[Notification]:
         """One cycle over every managed position."""
         notifications: list[Notification] = []
@@ -403,6 +413,7 @@ class PositionManager:
             return tick
 
         managed.last_good_quote = quote.asof
+        managed.last_bid, managed.last_ask = quote.bid, quote.ask
         managed.stale_warned = False
 
         if not await self._confirm_still_held(managed, tick):
