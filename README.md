@@ -1,10 +1,10 @@
 # options-scanner
 
 Copy-trades option alerts pasted into a Discord channel, then manages each
-position automatically on the advisor's published playstyle: sell half at +25%
-and another quarter at +50%, move the stop to break-even once trimmed, let the
-last quarter run, and trail 60% below the peak from +75% onward. Every action
-is reported as an embed in a separate updates channel.
+position automatically: sell a sixth at each of +25/+50/+75/+100%, move the
+stop to break-even at +25%, then trail it two levels behind the price (+25% at
++75%, +50% at +100%) and let the last third run. Every action is reported as an
+embed in a separate updates channel.
 
 Real money is involved. The bot defaults to `dry_run`, and live trading needs
 two independent confirmations.
@@ -87,41 +87,39 @@ Measured from your **actual fill price**, never the advisor's quoted entry.
 
 | Event | What happens |
 |---|---|
-| +25% reached | sell **half** the position |
-| +25% trim **fills** | stop moves to your entry fill — the trade can no longer lose |
-| +50% reached | sell **a quarter** of the original — a quarter is left running |
-| +75% reached | nothing sold, **the trailing stop arms** |
-| every further +25% (+100, +125, +150 … no upper end) | nothing sold — each posts a card as the runner climbs; a jump through several steps in one quote posts one card, for the highest |
-| trail, once armed | stop = `peak × 0.40`, i.e. 60% below the peak, floored at your entry |
-| above a +200% peak | the trail tightens to `peak × 0.55` |
-| above a +500% peak | it tightens again to `peak × 0.70` |
+| +25% reached | sell **1/6** of the original; stop moves to your entry fill — the trade can no longer lose |
+| +50% reached | sell another 1/6; the stop holds at break-even |
+| +75% reached | sell another 1/6; stop moves to **+25%** |
+| +100% reached | sell another 1/6; stop moves to **+50%** — about a third is left running |
+| every further +25% (+125, +150 … no upper end) | nothing sold, the stop stays at +50% — each posts a card as the runner climbs; a jump through several steps in one quote posts one card, for the highest |
 | stop hit | bid at/below the stop on **2 consecutive quotes** → marketable limit sell |
 
-Both trim fractions are of the **original** position, so the outcome does not
-depend on whether the rungs were crossed in one quote or five.
+The stop trails **two levels behind the price** (`stops.steps` in
+`config.yaml`). On 6 contracts filled at $1.00:
 
-The stop only ever moves up. There is **no stop before the first trim fills** —
-that window is unprotected by design, and `!flatten` plus the daily loss limit
-are the only brakes on it.
+| Bid reaches | Sell | Left | Stop | Worst case from here |
+|---|---|---|---|---|
+| $1.25 (+25%) | 1 | 5 | $1.00 | +$25 |
+| $1.50 (+50%) | 1 | 4 | $1.00 | +$75 |
+| $1.75 (+75%) | 1 | 3 | $1.25 | +$225 |
+| $2.00 (+100%) | 1 | 2 | $1.50 | +$350 |
+| above | — | 2 runners | $1.50 | +$350 |
 
-#### The trail is inert below +150%
+The runners are sold by hand (`!close`) or ridden to
+expiration; the peak trail (`trail:`) is switched off. The stops are driven by
+the **price**, not by a trim filling, so a position too small to trim at a
+level (1 contract never trims) still gets that level's stop. A gap through
+several levels in one quote sells each trim and moves the stop once, to the
+highest.
 
-Worth understanding before trusting it: `peak × 0.40` sits **below** your entry
-until the peak reaches 2.5× entry. The effective stop is
-`max(break-even, trail)`, so on a $2.95 fill:
+Trims are percents of the **original** position, rounded **up**, which is why
+the ladder is `16` and not `16.67`: 6 × 0.1667 rounds up to 2 contracts a trim.
+Larger sizes sell more per level (13 contracts → 3 each), and at least one
+contract always runs.
 
-| Peak | Trail says | Effective stop | What is protecting you |
-|---|---|---|---|
-| +25% (trim fills) | — | $2.95 | break-even |
-| +75% (trail arms) | $2.06 | $2.95 | still break-even |
-| +100% | $2.36 | $2.95 | still break-even |
-| +150% | $2.95 | $2.95 | the trail catches up |
-| +200% | $3.54 | $3.54 | the trail, +20% locked in |
-| +500% (0.55) | $9.74 | $9.74 | +230% locked in |
-
-Between +75% and +150% "trailing stop armed" means the trail is live, not that
-it is protecting anything beyond break-even. The TRAIL ARMED card says so.
-This is also why the multiplier tightens at the high levels.
+The stop only ever moves up. There is **no stop before +25%** — that window is
+unprotected by design, and `!flatten` plus the daily loss limit are the only
+brakes on it.
 
 #### Sizing
 
