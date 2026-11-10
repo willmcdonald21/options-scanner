@@ -23,27 +23,34 @@ entry:
   max_ask_below_alert_pct: 25
 
 trim:
-  # The advisor's ladder: sell half at +25%, another quarter at +50%, leave a
-  # quarter running.
+  # One sixth at each of +25/+50/+75/+100%, leaving a third running: on 6
+  # contracts, 1 at each level and 2 runners.
   #
   # [profit level %, percent of the ORIGINAL position to sell]. Of the
-  # original, not of the remainder -- a quarter of the remainder after
-  # selling half would leave three eighths running, not a quarter.
+  # original, not of the remainder. Each trim rounds UP, which is why this is
+  # 16 and not 16.67: 6 x 0.1667 = 1.0002 rounds up to 2 contracts a trim.
+  # 6 x 0.16 = 0.96 rounds up to 1. Larger sizes sell more per level
+  # (13 -> 3 each); min_runner_contracts always leaves at least one.
   schedule:
-    - [25, 50]
-    - [50, 25]
+    - [25, 16]
+    - [50, 16]
+    - [75, 16]
+    - [100, 16]
 
   # The runner's climb. Nothing is sold above the last trim: the runner is
   # reported once at every +25% (+75, +100, +125, +150, ... no upper end).
   # A jump through several steps in one quote gets one card, for the highest.
-  # The stop tightens on trail.schedule below, independently of these.
+  # The stop follows stops.steps below, independently of these.
   runner_levels: []
   runner_step_pct: 25
 
   min_runner_contracts: 1
 
 trail:
-  arm_at_pct: 75        # the trail starts working here
+  # Off: the step stops in stops.steps are the whole stop. The runners hold
+  # the +50% step and are sold by hand or ridden to expiration.
+  enabled: false
+  arm_at_pct: 75        # the trail starts working here (when enabled)
 
   # "Trails 60% below the peak": stop = peak * 0.40, tightening as the runner
   # gets large. [peak gain % at or above which it applies, multiplier].
@@ -65,6 +72,16 @@ stops:
   stale_quote_seconds: 15   # no quotes means no stop -- shout, don't drift
   exit_through_pct: 2.0     # exits price this % through the bid so they fill
   exit_retries: 3           # then escalate: an exit that won't fill must not stay quiet
+
+  # Step stops: [price reached %, stop moves to this % gain]. Breakeven once
+  # +25% is reached, then the stop trails two levels behind the price. On a
+  # $1.00 fill: +25% -> $1.00, +50% holds, +75% -> $1.25, +100% -> $1.50,
+  # and the runners keep $1.50. Driven by the price, so a position too small
+  # to trim still gets each stop. No stop before +25%.
+  steps:
+    - [25, 0]
+    - [75, 25]
+    - [100, 50]
 
 risk:
   # Every money limit below is a formula of the account, so one config serves
