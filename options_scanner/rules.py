@@ -42,6 +42,11 @@ In evaluation order:
    reaches a step's level the stop moves to that step's gain -- e.g. +25% ->
    breakeven, +75% -> +25%, +100% -> +50%. Price-driven, so a position too
    small to trim at a level still gets its stop.
+6b. **Runner lock** (when `runner_lock_at_pct` is set): once the peak reaches
+   it, a position whose runners outnumber its per-level sell by at least
+   `runner_lock_min_over_sells` locks half its runners (rounded down) on their
+   own stop, one level behind the price: +75% at +100%, +100% at +125%, ...
+   The rest keep the normal stop. 7b checks that stop separately.
 7. **Stop breach** requires the bid to sit at or below the stop for two
    consecutive quotes before exiting, so one bad tick on a wide 0DTE spread
    cannot flatten the position.
@@ -144,6 +149,18 @@ class RulesConfig:
     # keeps 3. See trim_qty.
     trim_rounding: Literal["up", "nearest"] = "up"
 
+    # The runner lock (None = off). Once the peak reaches runner_lock_at_pct,
+    # a position whose runners outnumber its per-level sell by at least
+    # runner_lock_min_over_sells locks half its runners (rounded down) on a
+    # stop of their own that trails one level behind the price: the highest
+    # runner_lock_step_pct step reached, less runner_lock_lag_pct. At 100/25/25
+    # that is +75% at +100%, +100% at +125%, +125% at +150%, with no upper
+    # end. The other runners keep the normal stop.
+    runner_lock_at_pct: int | None = None
+    runner_lock_lag_pct: int = 25
+    runner_lock_step_pct: int = 25
+    runner_lock_min_over_sells: int = 2
+
     def __post_init__(self) -> None:
         if not self.trim_schedule:
             raise ValueError("trim_schedule must not be empty")
@@ -221,6 +238,23 @@ class RulesConfig:
 
         if self.confirm_breaches < 1:
             raise ValueError(f"confirm_breaches must be at least 1, got {self.confirm_breaches}")
+        if self.runner_lock_at_pct is not None:
+            if self.runner_lock_at_pct <= 0:
+                raise ValueError(f"runner_lock_at_pct must be a positive percent, got {self.runner_lock_at_pct}")
+            if self.runner_lock_step_pct <= 0:
+                raise ValueError(f"runner_lock_step_pct must be positive, got {self.runner_lock_step_pct}")
+            # Zero would park the stop on the level that set it; the lock
+            # would sell on the first tick down.
+            if not 0 < self.runner_lock_lag_pct < self.runner_lock_at_pct + 100:
+                raise ValueError(
+                    f"runner_lock_lag_pct must be above 0 and keep the stop above -100%, "
+                    f"got {self.runner_lock_lag_pct}"
+                )
+            if self.runner_lock_min_over_sells < 0:
+                raise ValueError(
+                    f"runner_lock_min_over_sells cannot be negative, got {self.runner_lock_min_over_sells}"
+                )
+
         if self.trim_rounding not in ("up", "nearest"):
             raise ValueError(f"trim_rounding must be 'up' or 'nearest', got {self.trim_rounding!r}")
         if self.min_runner_contracts < 0:
@@ -316,6 +350,32 @@ class ArmTrail:
 
 
 @dataclass(frozen=True)
+class LockRunners:
+    """The runner lock fired: `qty` of the `runners` held now trail one level
+    behind the price on a stop of their own, starting at `stop_price`."""
+
+    qty: int
+    runners: int
+    stop_price: float
+    level_pct: int
+    locks_pct: int
+
+
+@dataclass(frozen=True)
+class SetLockStop:
+    """The locked runners' stop moved up one level."""
+
+    price: float
+    level_pct: int
+    locks_pct: int
+
+
+# Which contracts a breach or stop-out is about: "all" is the normal stop on
+# everything held, "locked" the runner lock's own stop on its own contracts.
+Tranche = Literal["all", "locked"]
+
+
+@dataclass(frozen=True)
 class Breach:
     """The bid is at or below the stop, but the confirmation window has not
     closed yet. Recorded rather than acted on."""
@@ -323,23 +383,31 @@ class Breach:
     count: int
     required: int
     bid: float
+    tranche: Tranche = "all"
 
 
 @dataclass(frozen=True)
 class ClearBreach:
     """The bid recovered above the stop before the window closed."""
 
+    tranche: Tranche = "all"
+
 
 @dataclass(frozen=True)
 class StopOut:
-    """Confirmed. Sell everything remaining at a marketable limit."""
+    """Confirmed. Sell at a marketable limit: everything remaining, or with
+    tranche="locked" only the locked runners."""
 
     qty: int
     stop_price: float
     bid: float
+    tranche: Tranche = "all"
 
 
-Action = UpdatePeak | Trim | RunnerLevel | SetStop | ArmTrail | Breach | ClearBreach | StopOut
+Action = (
+    UpdatePeak | Trim | RunnerLevel | SetStop | ArmTrail | LockRunners | SetLockStop
+    | Breach | ClearBreach | StopOut
+)
 
 
 # --- price helpers ---------------------------------------------------------
@@ -441,6 +509,48 @@ def trim_qty(
     return max(0, min(wanted, remaining - min_runner))
 
 
+def planned_trims(original_qty: int, config: RulesConfig) -> tuple[int, ...]:
+    """What each trim rung sells on a position of `original_qty`, if every
+    rung fires and fills. Pure; the same trim_qty the ladder uses."""
+    remaining = original_qty
+    sells: list[int] = []
+    for _, fraction in config.trim_schedule:
+        qty = trim_qty(original_qty, remaining, fraction, config.min_runner_contracts, config.trim_rounding)
+        sells.append(qty)
+        remaining -= qty
+    return tuple(sells)
+
+
+def runner_lock_qty(original_qty: int, runners: int, config: RulesConfig) -> int:
+    """How many of `runners` the lock takes: half, rounded down, when the
+    runners outnumber the per-level sell by at least
+    runner_lock_min_over_sells. 0 means the size does not qualify.
+
+    With 16% a level, rounded to nearest: 9 contracts sell 1 a level and keep
+    5 runners, so 2 lock. 16 sell 3 and keep 4 -- only 1 more -- so none do.
+    """
+    if config.runner_lock_at_pct is None or runners <= 0:
+        return 0
+    per_level = max(planned_trims(original_qty, config), default=0)
+    if per_level <= 0 or runners - per_level < config.runner_lock_min_over_sells:
+        return 0
+    return runners // 2
+
+
+def runner_lock_level(entry_fill: float, peak_bid: float, config: RulesConfig) -> tuple[int, int, float] | None:
+    """(level reached, level the stop locks, stop price) for the locked
+    runners, or None below the lock's first level. The level is the highest
+    step the peak has reached, so a gap moves the stop once, to the top."""
+    first = config.runner_lock_at_pct
+    if first is None or peak_bid < level_price(entry_fill, first):
+        return None
+    level = first
+    while peak_bid >= level_price(entry_fill, level + config.runner_lock_step_pct):
+        level += config.runner_lock_step_pct
+    locks = level - config.runner_lock_lag_pct
+    return level, locks, round_price(level_price(entry_fill, locks))
+
+
 # --- the rules -------------------------------------------------------------
 
 
@@ -539,20 +649,63 @@ def evaluate(state: PositionState, bid: float, config: RulesConfig | None = None
             stop = candidate
             actions.append(SetStop(price=candidate, reason="trail"))
 
+    # 6b. The runner lock. Fires once, the first time the peak reaches its
+    #     level on a position that qualifies, counting the runners left after
+    #     this quote's trims. After that the locked runners' stop ratchets up
+    #     one level at a time, only ever upward.
+    lock_qty = state.lock_qty
+    lock_stop = state.lock_stop
+    lock = runner_lock_level(state.entry_fill, peak, config)
+    if lock is not None:
+        level, locks, candidate = lock
+        if not state.lock_armed:
+            qty = runner_lock_qty(state.original_qty, remaining, config)
+            if qty > 0:
+                lock_qty, lock_stop = qty, candidate
+                actions.append(
+                    LockRunners(
+                        qty=qty, runners=remaining, stop_price=candidate,
+                        level_pct=level, locks_pct=locks,
+                    )
+                )
+        elif lock_qty > 0 and (lock_stop is None or candidate > lock_stop):
+            lock_stop = candidate
+            actions.append(SetLockStop(price=candidate, level_pct=level, locks_pct=locks))
+
     # 7. Stop breach, with confirmation. Checked last: a bid cannot be both
     #    at a trim level and under the stop, because the stop never exceeds
     #    breakeven until the trail arms, and the trail only arms once every
     #    lower level has already fired. A step stop sits below the level that
     #    set it, and every trim at or below the peak has already fired, so the
     #    same holds with steps.
+    stopped_out = False
     if stop is not None and bid <= stop:
         count = state.consecutive_breaches + 1
         if count >= config.confirm_breaches:
             actions.append(StopOut(qty=state.remaining_qty, stop_price=stop, bid=bid))
+            stopped_out = True
         else:
             actions.append(Breach(count=count, required=config.confirm_breaches, bid=bid))
     elif state.consecutive_breaches:
         actions.append(ClearBreach())
+
+    # 7b. The locked runners' own stop, with its own confirmation count. It
+    #     sits above the normal stop, so it usually trips first and the other
+    #     runners carry on. When the normal stop trips too, its StopOut
+    #     already sells everything, the locked runners included.
+    if not stopped_out and lock_qty > 0 and lock_stop is not None:
+        if bid <= lock_stop:
+            count = state.lock_breaches + 1
+            if count >= config.confirm_breaches:
+                actions.append(
+                    StopOut(qty=min(lock_qty, state.remaining_qty), stop_price=lock_stop, bid=bid, tranche="locked")
+                )
+            else:
+                actions.append(
+                    Breach(count=count, required=config.confirm_breaches, bid=bid, tranche="locked")
+                )
+        elif state.lock_breaches:
+            actions.append(ClearBreach(tranche="locked"))
 
     return actions
 
@@ -623,11 +776,31 @@ def apply_action(state: PositionState, action: Action) -> None:
     elif isinstance(action, ArmTrail):
         state.trail_armed = True
 
+    elif isinstance(action, LockRunners):
+        state.lock_armed = True
+        state.lock_qty = min(action.qty, state.remaining_qty)
+        state.lock_stop = action.stop_price
+        state.lock_breaches = 0
+
+    elif isinstance(action, SetLockStop):
+        if state.lock_stop is not None and action.price < state.lock_stop:
+            raise ValueError(
+                f"lock stop would move down from {state.lock_stop} to {action.price}; "
+                "the effective stop must never decrease"
+            )
+        state.lock_stop = action.price
+
     elif isinstance(action, Breach):
-        state.consecutive_breaches = action.count
+        if action.tranche == "locked":
+            state.lock_breaches = action.count
+        else:
+            state.consecutive_breaches = action.count
 
     elif isinstance(action, ClearBreach):
-        state.consecutive_breaches = 0
+        if action.tranche == "locked":
+            state.lock_breaches = 0
+        else:
+            state.consecutive_breaches = 0
 
     elif isinstance(action, StopOut):
         if action.qty > state.remaining_qty:
@@ -635,7 +808,16 @@ def apply_action(state: PositionState, action: Action) -> None:
                 f"stop-out of {action.qty} exceeds the {state.remaining_qty} contracts held"
             )
         state.remaining_qty -= action.qty
-        state.consecutive_breaches = 0
+        if action.tranche == "locked":
+            state.lock_qty = max(0, state.lock_qty - action.qty)
+            state.lock_breaches = 0
+        else:
+            state.consecutive_breaches = 0
+        # Whatever sold, the lock can never hold more than is left.
+        state.lock_qty = min(state.lock_qty, state.remaining_qty)
+        if state.lock_qty == 0:
+            state.lock_stop = None
+            state.lock_breaches = 0
         if state.remaining_qty <= 0:
             state.closed = True
 
@@ -692,6 +874,10 @@ def average_into(state: PositionState, added_qty: int, added_price: float) -> Av
     state.fired_levels = frozenset()
     state.peak_bid = added_price
     state.trail_armed = False
+    state.lock_armed = False
+    state.lock_qty = 0
+    state.lock_stop = None
+    state.lock_breaches = 0
     state.stop_price = None
     state.stop_reason = None
     state.consecutive_breaches = 0
@@ -737,6 +923,9 @@ __all__ = [
     "SetStop",
     "StopOut",
     "Trim",
+    "LockRunners",
+    "SetLockStop",
+    "Tranche",
     "UpdatePeak",
     "apply_action",
     "average_into",
@@ -744,6 +933,9 @@ __all__ = [
     "level_price",
     "next_level",
     "on_trim_fill",
+    "planned_trims",
+    "runner_lock_level",
+    "runner_lock_qty",
     "round_price",
     "trail_multiplier",
     "trail_stop_price",

@@ -1024,3 +1024,107 @@ def test_nearest_rounding_through_the_whole_ladder(qty, sells, runners):
 def test_an_unknown_trim_rounding_is_rejected():
     with pytest.raises(ValueError, match="trim_rounding"):
         RulesConfig(trim_rounding="down")
+
+
+# --- the runner lock -------------------------------------------------------
+#
+# Half the runners (rounded down) trail one level behind from +100% when the
+# runners outnumber the per-level sell by 2 or more; the rest keep +50%.
+
+from options_scanner.rules import LockRunners, SetLockStop, average_into, runner_lock_qty  # noqa: E402
+
+LOCK_CFG = RulesConfig(
+    trim_schedule=STEP_CFG.trim_schedule,
+    runner_levels=(),
+    stop_steps=STEPS,
+    trail_enabled=False,
+    trim_rounding="nearest",
+    runner_lock_at_pct=100,
+)
+TO_100 = [1.25, 1.50, 1.75, 2.00]
+
+
+def _locks(result):
+    return [a for a in result.actions if isinstance(a, LockRunners)]
+
+
+@pytest.mark.parametrize(
+    "qty,locked",
+    [(1, 0), (2, 0), (5, 0), (6, 0), (7, 1), (8, 2), (9, 2), (10, 0), (11, 0),
+     (12, 2), (13, 2), (14, 3), (15, 3), (16, 0), (17, 2), (20, 4), (50, 9)],
+)
+def test_which_sizes_lock_half_their_runners(qty, locked):
+    result = walk(TO_100, _state(1.00, qty), LOCK_CFG)
+    assert result.state.lock_qty == locked
+    assert len(_locks(result)) == (1 if locked else 0)
+    assert result.state.stop_price == 1.50  # the rest keep +50% either way
+
+
+def test_the_locked_runners_trail_one_level_behind():
+    result = walk(TO_100 + [2.25, 2.50, 2.75], _state(1.00, 9), LOCK_CFG)
+    (lock,) = _locks(result)
+    assert (lock.qty, lock.runners, lock.stop_price, lock.level_pct) == (2, 5, 1.75, 100)
+    moves = [(a.level_pct, a.price) for a in result.actions if isinstance(a, SetLockStop)]
+    assert moves == [(125, 2.00), (150, 2.25), (175, 2.50)]
+    assert result.state.stop_price == 1.50
+
+
+def test_the_locked_runners_stop_out_and_the_rest_keep_running():
+    result = walk(TO_100 + [2.25, 2.50, 2.24, 2.23], _state(1.00, 9), LOCK_CFG)
+    assert [(s.qty, s.stop_price, s.tranche) for s in result.stop_outs] == [(2, 2.25, "locked")]
+    assert result.state.remaining_qty == 3
+    assert not result.state.closed
+    assert (result.state.lock_qty, result.state.lock_stop) == (0, None)
+
+    walk([1.60, 1.49, 1.48], result.state, LOCK_CFG)
+    assert result.state.closed
+
+
+def test_a_gap_under_both_stops_sells_everything_once():
+    result = walk(TO_100 + [2.50, 1.40, 1.39], _state(1.00, 9), LOCK_CFG)
+    assert [(s.qty, s.tranche) for s in result.stop_outs] == [(5, "all")]
+    assert result.state.closed
+
+
+def test_a_recovery_clears_a_locked_breach():
+    result = walk(TO_100 + [2.50, 2.24, 2.40], _state(1.00, 9), LOCK_CFG)
+    assert result.state.lock_breaches == 0
+    assert result.stop_outs == []
+
+
+def test_the_lock_never_re_arms_after_its_runners_sell():
+    result = walk(TO_100 + [2.50, 2.24, 2.23, 3.00, 4.00], _state(1.00, 9), LOCK_CFG)
+    assert len(_locks(result)) == 1
+    assert result.state.lock_qty == 0
+
+
+def test_a_gap_straight_past_the_lock_level_locks_one_level_behind_the_top():
+    result = walk([2.60], _state(1.00, 9), LOCK_CFG)
+    (lock,) = _locks(result)
+    assert (lock.qty, lock.level_pct, lock.stop_price) == (2, 150, 2.25)
+
+
+def test_an_average_down_clears_the_lock():
+    result = walk(TO_100, _state(1.00, 9), LOCK_CFG)
+    average_into(result.state, 5, 1.20)
+    assert (result.state.lock_armed, result.state.lock_qty, result.state.lock_stop) == (False, 0, None)
+
+
+def test_the_lock_is_off_by_default():
+    result = walk(TO_100 + [3.00], _state(1.00, 9), STEP_CFG)
+    assert _locks(result) == []
+    assert runner_lock_qty(9, 5, CFG) == 0
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"runner_lock_at_pct": 0},
+        {"runner_lock_at_pct": 100, "runner_lock_lag_pct": 0},
+        {"runner_lock_at_pct": 100, "runner_lock_step_pct": 0},
+        {"runner_lock_at_pct": 100, "runner_lock_min_over_sells": -1},
+    ],
+)
+def test_bad_runner_lock_settings_are_rejected(overrides):
+    with pytest.raises(ValueError):
+        RulesConfig(**overrides)
