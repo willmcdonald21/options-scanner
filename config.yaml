@@ -85,6 +85,17 @@ stops:
     - [75, 25]
     - [100, 50]
 
+  # The runner lock. From +100%, when the runners outnumber the per-level sell
+  # by 2 or more (7-9, 12-15, 17+ contracts; not 1-6, 10, 11 or 16), half the
+  # runners -- rounded down -- trail ONE level behind instead of holding +50%:
+  # +75% at +100%, +100% at +125%, +125% at +150%, and so on with no upper
+  # end. The other runners keep the +50% stop. 9 contracts: 2 lock, 3 don't.
+  runner_lock:
+    at_pct: 100           # the level that starts it
+    lag_pct: 25           # how far behind the price the locked stop sits
+    step_pct: 25          # it moves up at every +25%
+    min_over_sells: 2     # runners - per-level sell needed to qualify
+
 risk:
   # Every money limit below is a formula of the account, so one config serves
   # both the ~$1,100 live options account and the paper rehearsal.
