@@ -112,10 +112,23 @@ level (1 contract never trims) still gets that level's stop. A gap through
 several levels in one quote sells each trim and moves the stop once, to the
 highest.
 
-Trims are percents of the **original** position, rounded **up**, which is why
-the ladder is `16` and not `16.67`: 6 × 0.1667 rounds up to 2 contracts a trim.
-Larger sizes sell more per level (13 contracts → 3 each), and at least one
-contract always runs.
+Trims are percents of the **original** position, rounded to the **nearest**
+contract with a minimum of 1 (`trim.rounding: nearest`), and at least one
+contract always runs:
+
+| Contracts | Sell at +25 / +50 / +75 / +100 | Runners |
+|---|---|---|
+| 1 | — | 1 |
+| 2 | 1 / – / – / – | 1 |
+| 3 | 1 / 1 / – / – | 1 |
+| 4 | 1 / 1 / 1 / – | 1 |
+| 5–9 | 1 each | 1–5 |
+| 10–15 | 2 each | 2–7 |
+| 16–21 | 3 each | 4–9 |
+
+Small positions run out of contracts before the ladder does, but the step
+stops still apply to whatever is left. `rounding: up` sells more per level
+instead (7 contracts → 2 each, 1 runner).
 
 The stop only ever moves up. There is **no stop before +25%** — that window is
 unprotected by design, and `!flatten` plus the daily loss limit are the only
