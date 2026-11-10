@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 from dataclasses import replace
 
 import discord
@@ -152,6 +153,21 @@ class SwiftAlertBot(discord.Client):
             )
 
     # --- startup -----------------------------------------------------------
+
+    async def setup_hook(self) -> None:
+        # launchd stops the bot with SIGTERM (`ops.sh stop` and `restart`).
+        # Unhandled, that kills the process on the spot and close() never
+        # runs, so the positions board is left looking live. KeepAlive still
+        # restarts the bot after a clean exit, so this changes nothing there.
+        try:
+            asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, self._on_sigterm)
+        except (NotImplementedError, RuntimeError):
+            logger.debug("no SIGTERM handler on this platform")
+
+    def _on_sigterm(self) -> None:
+        logger.info("SIGTERM received; shutting down")
+        if not self.is_closed():
+            asyncio.ensure_future(self.close())
 
     async def on_ready(self) -> None:
         if self._ready_once:

@@ -180,6 +180,33 @@ async def test_closing_the_bot_marks_the_board_offline(storage):
     assert calls == ["shutdown"]
 
 
+async def test_sigterm_closes_the_bot_so_the_board_is_marked_offline(storage):
+    """launchd stops the bot with SIGTERM; unhandled, close() never runs."""
+    import asyncio
+    import signal
+
+    bot, _ = _bot(storage, pnl="", updates="")
+    closed = []
+
+    async def close():
+        closed.append(True)
+
+    bot.close = close
+    loop = asyncio.get_running_loop()
+    registered = {}
+    original = loop.add_signal_handler
+    loop.add_signal_handler = lambda sig, cb: registered.setdefault(sig, cb)
+    try:
+        await bot.setup_hook()
+    finally:
+        loop.add_signal_handler = original
+
+    registered[signal.SIGTERM]()
+    await asyncio.sleep(0)
+
+    assert closed == [True]
+
+
 # --- !close -----------------------------------------------------------------
 
 from datetime import date  # noqa: E402
