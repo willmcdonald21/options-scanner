@@ -13,6 +13,7 @@ from options_scanner.webhook import WebhookError
 
 PNL_HOOK = "https://discord.com/api/webhooks/111/pnl-token"
 UPDATES_HOOK = "https://discord.com/api/webhooks/222/updates-token"
+BOARD_HOOK = "https://discord.com/api/webhooks/333/board-token"
 
 
 class _Quotes:
@@ -21,15 +22,16 @@ class _Quotes:
 
 
 class FakeWebhook:
-    def __init__(self, *, valid=True):
+    def __init__(self, *, valid=True, channel_id="999"):
         self.valid = valid
+        self.channel_id = channel_id
         self.posted: list[Notification] = []
         self.closed = False
 
     async def validate(self):
         if not self.valid:
             raise WebhookError("webhook does not exist (404)")
-        return {"channel_id": "999"}
+        return {"channel_id": self.channel_id}
 
     async def post(self, note):
         self.posted.append(note)
@@ -39,12 +41,13 @@ class FakeWebhook:
         self.closed = True
 
 
-def _bot(storage, *, pnl=PNL_HOOK, updates=UPDATES_HOOK):
+def _bot(storage, *, pnl=PNL_HOOK, updates=UPDATES_HOOK, board=""):
     settings = make_settings(
         mode="paper",
         discord={
             "bot_token": "t", "alerts_channel_id": 1001, "updates_channel_id": 2002,
             "owner_user_id": 3003, "pnl_webhook_url": pnl, "updates_webhook_url": updates,
+            "positions_webhook_url": board,
         },
     )
     risk = RiskGate(settings, storage)
@@ -104,6 +107,77 @@ async def test_a_working_pnl_webhook_stays_on(storage):
     assert bot._pnl_webhook is not None
     assert manager._notify_pnl == bot.post_pnl
     assert bot._pnl_startup_problem is None
+
+
+# --- the positions board ------------------------------------------------------
+
+
+async def test_with_a_positions_webhook_the_board_reads_the_live_manager(storage):
+    bot, manager = _bot(storage, board=BOARD_HOOK)
+
+    assert bot.board is not None
+    assert bot.board.manager is manager
+    assert bot.board.broker is bot.pipeline.broker
+    await bot._board_webhook.close()
+
+
+async def test_without_one_there_is_no_board(storage):
+    bot, _ = _bot(storage)
+
+    assert bot.board is None and bot._board_webhook is None
+
+
+async def _check_board(storage, hook):
+    bot, _ = _bot(storage, board=BOARD_HOOK)
+    await bot._board_webhook.close()
+    bot._board_webhook = hook
+    await bot._check_board_webhook()
+    return bot
+
+
+async def test_a_working_board_webhook_stays_on(storage):
+    bot = await _check_board(storage, FakeWebhook(channel_id="4004"))
+
+    assert bot.board is not None
+    assert bot._board_startup_problem is None
+
+
+async def test_a_broken_board_webhook_turns_the_board_off_but_not_the_bot(storage):
+    hook = FakeWebhook(valid=False)
+    bot = await _check_board(storage, hook)
+
+    assert bot.board is None and bot._board_webhook is None
+    assert hook.closed
+    assert "404" in bot._board_startup_problem
+
+
+async def test_the_board_may_not_post_in_the_alerts_channel(storage):
+    """The bot never posts text there; the reaction is the only signal."""
+    bot = await _check_board(storage, FakeWebhook(channel_id="1001"))
+
+    assert bot.board is None
+    assert "alerts channel" in bot._board_startup_problem
+
+
+async def test_the_board_may_not_share_the_updates_channel(storage):
+    bot = await _check_board(storage, FakeWebhook(channel_id="2002"))
+
+    assert bot.board is None
+    assert "updates channel" in bot._board_startup_problem
+
+
+async def test_closing_the_bot_marks_the_board_offline(storage):
+    bot, _ = _bot(storage, pnl="", updates="", board=BOARD_HOOK)
+    calls = []
+
+    class Board:
+        async def shutdown(self):
+            calls.append("shutdown")
+
+    bot.board = Board()
+    await bot.close()
+
+    assert calls == ["shutdown"]
 
 
 # --- !close -----------------------------------------------------------------

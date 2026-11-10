@@ -23,6 +23,7 @@ from dataclasses import replace
 
 import discord
 
+from options_scanner.board import PositionsBoard
 from options_scanner.config import Mode, Settings
 from options_scanner.market_hours import describe as describe_session
 from options_scanner.models import OptionKey
@@ -113,6 +114,8 @@ class SwiftAlertBot(discord.Client):
         self._manager_task: asyncio.Task | None = None
         self._ready_once = False
         self._pnl_startup_problem: str | None = None
+        self._board_startup_problem: str | None = None
+        self._board_task: asyncio.Task | None = None
 
         # Posting transport. A webhook needs no channel permissions, so the
         # bot's role can be misconfigured without silencing its reporting --
@@ -131,6 +134,22 @@ class SwiftAlertBot(discord.Client):
             self._pnl_webhook = WebhookNotifier(settings.discord.pnl_webhook_url)
             if manager is not None:
                 manager._notify_pnl = self.post_pnl
+
+        # The positions board: one message in its own channel, edited in
+        # place. Optional, and a report only -- it never pings and never
+        # controls anything.
+        self._board_webhook: WebhookNotifier | None = None
+        self.board: PositionsBoard | None = None
+        if settings.discord.posts_board:
+            self._board_webhook = WebhookNotifier(settings.discord.positions_webhook_url)
+            self.board = PositionsBoard(
+                self._board_webhook,
+                settings=settings,
+                storage=storage,
+                risk=risk,
+                manager=manager,
+                broker=pipeline.broker,
+            )
 
     # --- startup -----------------------------------------------------------
 
@@ -171,6 +190,18 @@ class SwiftAlertBot(discord.Client):
                     ),
                 )
             )
+        if self._board_startup_problem:
+            await self.post(
+                Notification(
+                    title="Positions board is off",
+                    level=Level.WARNING,
+                    description=(
+                        f"{self._board_startup_problem}\nTrading is unaffected; `!status` still "
+                        "shows the positions. Fix POSITIONS_WEBHOOK_URL in .env and restart to "
+                        "turn it back on."
+                    ),
+                )
+            )
 
         # Connect before reconciling: reconciliation compares against the
         # broker, so doing it on a dead session would report every position as
@@ -198,6 +229,10 @@ class SwiftAlertBot(discord.Client):
             self._manager_task = asyncio.create_task(self.manager.run())
             logger.info("position manager loop started")
 
+        if self.board is not None:
+            # Its own task: a slow Discord costs the board, never a stop.
+            self._board_task = asyncio.create_task(self.board.run())
+
         logger.info("ready as %s (%s)", self.user, self.settings.summary_line())
 
     async def close(self) -> None:
@@ -205,6 +240,14 @@ class SwiftAlertBot(discord.Client):
             self.manager.stop()
         if self._manager_task is not None:
             self._manager_task.cancel()
+        if self._board_task is not None:
+            self._board_task.cancel()
+        if self.board is not None:
+            # Before the session closes: the board says it is offline rather
+            # than passing for live after the bot has gone.
+            await self.board.shutdown()
+        if self._board_webhook is not None:
+            await self._board_webhook.close()
         if self._webhook is not None:
             await self._webhook.close()
         if self._pnl_webhook is not None:
@@ -269,6 +312,45 @@ class SwiftAlertBot(discord.Client):
         logger.info("channel checks passed (alerts=%s updates=%s)", alerts_id, updates_id)
 
         await self._check_pnl_webhook()
+        await self._check_board_webhook()
+
+    async def _check_board_webhook(self) -> None:
+        """Prove the positions-board webhook works, or switch the board off.
+
+        Not fatal, like the P&L check: the board is a report. It must point at
+        a channel of its own -- in alerts it would break the rule that the bot
+        posts no text there, and in updates it would be buried by the cards.
+        """
+        if self._board_webhook is None:
+            return
+        problem = None
+        try:
+            info = await self._board_webhook.validate()
+        except WebhookError as exc:
+            problem = str(exc)
+        else:
+            target = int(info.get("channel_id") or 0)
+            if target == self.settings.discord.alerts_channel_id:
+                problem = (
+                    "POSITIONS_WEBHOOK_URL posts to the alerts channel, where the bot never "
+                    "posts text. Give the board a channel of its own."
+                )
+            elif target == self.settings.discord.updates_channel_id:
+                problem = (
+                    "POSITIONS_WEBHOOK_URL posts to the updates channel, where the board would "
+                    "be buried under the cards. Give it a channel of its own."
+                )
+        if problem is None:
+            logger.info(
+                "positions board via webhook %s (channel %s)",
+                redact(self.settings.discord.positions_webhook_url), info.get("channel_id"),
+            )
+            return
+        logger.error("positions board is off: %s", problem)
+        await self._board_webhook.close()
+        self._board_webhook = None
+        self.board = None
+        self._board_startup_problem = problem
 
     async def _check_pnl_webhook(self) -> None:
         """Prove the P&L webhook works, or switch P&L cards off.
