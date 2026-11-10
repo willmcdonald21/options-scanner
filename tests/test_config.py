@@ -242,6 +242,31 @@ def test_whole_percent_config_becomes_fractions_for_the_rules_engine():
     assert rules.breakeven_after_level_pct == 25
 
 
+def test_step_stops_and_the_trail_switch_carry_through_to_the_rules_engine():
+    settings = make_settings(
+        stops={"steps": [(25, 0), (75, 25), (100, 50)]},
+        trail={"enabled": False},
+    )
+    rules = settings.rules()
+    assert rules.stop_steps == ((25, 0), (75, 25), (100, 50))
+    assert rules.trail_enabled is False
+
+    line = settings.summary_line()
+    assert "stops=+25%->BE/+75%->+25%/+100%->+50%" in line
+    assert "trail=off" in line
+
+
+def test_by_default_there_are_no_steps_and_the_trail_is_on():
+    rules = make_settings().rules()
+    assert rules.stop_steps == ()
+    assert rules.trail_enabled is True
+
+
+def test_a_bad_stop_step_fails_at_load():
+    with pytest.raises(ValueError, match="stop step"):
+        make_settings(stops={"steps": [(25, 25)]})
+
+
 def test_a_custom_schedule_carries_through_to_the_rules_engine():
     settings = make_settings(
         trim={"schedule": [(50, 50.0)], "runner_levels": [200]},

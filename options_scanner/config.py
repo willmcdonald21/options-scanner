@@ -126,6 +126,8 @@ class TrimSettings(BaseModel):
 
 
 class TrailSettings(BaseModel):
+    # The peak trail. Off = it never arms; stops.steps is then the only stop.
+    enabled: bool = True
     arm_at_pct: int = Field(default=75, gt=0)
 
     # (peak gain percent at or above which it applies, multiplier of the peak
@@ -157,6 +159,11 @@ class StopSettings(BaseModel):
     # Attempts at the same exit before escalating to the owner. An exit that
     # will not fill is the one failure that cannot be left quiet.
     exit_retries: int = Field(default=3, ge=1, le=10)
+
+    # Step stops: [level reached %, stop moves to this % gain]. Price-driven,
+    # replacing breakeven-on-fill when set. [] = breakeven after the first
+    # trim fills. Validated in RulesConfig.
+    steps: list[tuple[int, float]] = Field(default_factory=list)
 
 
 class RiskSettings(BaseModel):
@@ -354,9 +361,11 @@ class Settings(BaseModel):
             trim_schedule=tuple((level, pct / 100.0) for level, pct in self.trim.schedule),
             runner_levels=tuple(self.trim.runner_levels),
             runner_step_pct=self.trim.runner_step_pct,
+            trail_enabled=self.trail.enabled,
             trail_arm_pct=self.trail.arm_at_pct,
             trail_schedule=tuple((threshold, mult) for threshold, mult in self.trail.schedule),
             breakeven_after_level_pct=min(level for level, _ in self.trim.schedule),
+            stop_steps=tuple((level, locks) for level, locks in self.stops.steps),
             confirm_breaches=self.stops.confirm_polls,
             min_runner_contracts=self.trim.min_runner_contracts,
         )
@@ -405,9 +414,20 @@ class Settings(BaseModel):
     def summary_line(self) -> str:
         trims = "/".join(f"+{level}%:{pct:.0f}%" for level, pct in self.trim.schedule if pct > 0)
         trail_mult = self.trail.schedule[0][1] if self.trail.schedule else 0.0
+        trail = (
+            f"trail=arm@+{self.trail.arm_at_pct}%/{(1 - trail_mult) * 100:.0f}% below peak "
+            if self.trail.enabled
+            else "trail=off "
+        )
+        steps = ""
+        if self.stops.steps:
+            moves = "/".join(
+                f"+{level}%->{'BE' if locks == 0 else f'{locks:+g}%'}" for level, locks in self.stops.steps
+            )
+            steps = f"stops={moves} "
         return (
             f"mode={self.mode.value} broker={self.broker.kind.value} trims={trims} of original "
-            f"trail=arm@+{self.trail.arm_at_pct}%/{(1 - trail_mult) * 100:.0f}% below peak "
+            f"{steps}{trail}"
             f"size={self._sizing_summary()} "
             f"cutoff={self.market.entry_cutoff} ET"
         )
