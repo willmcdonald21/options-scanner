@@ -256,6 +256,13 @@ def test_step_stops_and_the_trail_switch_carry_through_to_the_rules_engine():
     assert "trail=off" in line
 
 
+def test_trim_rounding_carries_through_to_the_rules_engine():
+    assert make_settings().rules().trim_rounding == "up"
+    assert make_settings(trim={"rounding": "nearest"}).rules().trim_rounding == "nearest"
+    with pytest.raises(ValueError):
+        make_settings(trim={"rounding": "down"})
+
+
 def test_by_default_there_are_no_steps_and_the_trail_is_on():
     rules = make_settings().rules()
     assert rules.stop_steps == ()

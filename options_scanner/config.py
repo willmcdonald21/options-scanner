@@ -16,7 +16,7 @@ import os
 from datetime import time
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import load_dotenv
@@ -123,6 +123,8 @@ class TrimSettings(BaseModel):
     # trim, with no upper end. None = only runner_levels.
     runner_step_pct: int | None = Field(default=None, gt=0)
     min_runner_contracts: int = Field(default=1, ge=0)
+    # "up" (ceil) or "nearest" (half up, minimum 1). See rules.trim_qty.
+    rounding: Literal["up", "nearest"] = "up"
 
 
 class TrailSettings(BaseModel):
@@ -368,6 +370,7 @@ class Settings(BaseModel):
             stop_steps=tuple((level, locks) for level, locks in self.stops.steps),
             confirm_breaches=self.stops.confirm_polls,
             min_runner_contracts=self.trim.min_runner_contracts,
+            trim_rounding=self.trim.rounding,
         )
 
     def resolve_path(self, relative: str) -> Path:
