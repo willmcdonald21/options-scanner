@@ -969,3 +969,58 @@ def test_the_trail_off_ignores_an_armed_flag_restored_from_storage():
     state.trail_armed = True
     result = walk([3.00], state, RulesConfig(trail_enabled=False))
     assert all(s.reason != "trail" for s in result.stops)
+
+
+# --- nearest trim rounding -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "original,remaining,fraction,expected",
+    [
+        (6, 6, 0.16, 1),     # 0.96
+        (7, 7, 0.16, 1),     # 1.12 -- "up" sells 2
+        (13, 13, 0.16, 2),   # 2.08 -- "up" sells 3
+        (10, 10, 0.16, 2),   # 1.60
+        (2, 2, 0.16, 1),     # 0.32, but a small position still trims
+        (25, 25, 0.10, 3),   # 2.5 rounds half UP, not to even
+        (21, 21, 0.50, 11),  # 10.5
+        (1, 1, 0.16, 0),     # the runner is untouchable
+        (21, 21, 0.0, 0),
+        (21, 21, 1.0, 20),   # clamped to leave the runner
+    ],
+)
+def test_trim_qty_nearest(original, remaining, fraction, expected):
+    assert trim_qty(original, remaining, fraction, min_runner=1, rounding="nearest") == expected
+
+
+NEAREST_CFG = RulesConfig(
+    trim_schedule=STEP_CFG.trim_schedule,
+    runner_levels=(),
+    stop_steps=STEPS,
+    trim_rounding="nearest",
+)
+
+
+@pytest.mark.parametrize(
+    "qty,sells,runners",
+    [
+        (1, [], 1),
+        (2, [1], 1),
+        (5, [1, 1, 1, 1], 1),
+        (6, [1, 1, 1, 1], 2),
+        (7, [1, 1, 1, 1], 3),
+        (12, [2, 2, 2, 2], 4),
+        (13, [2, 2, 2, 2], 5),
+        (20, [3, 3, 3, 3], 8),
+    ],
+)
+def test_nearest_rounding_through_the_whole_ladder(qty, sells, runners):
+    result = walk([1.25, 1.50, 1.75, 2.00], _state(1.00, qty), NEAREST_CFG)
+    assert [t.qty for t in result.trims] == sells
+    assert result.state.remaining_qty == runners
+    assert result.state.stop_price == 1.50
+
+
+def test_an_unknown_trim_rounding_is_rejected():
+    with pytest.raises(ValueError, match="trim_rounding"):
+        RulesConfig(trim_rounding="down")

@@ -138,6 +138,12 @@ class RulesConfig:
     # the ladder.
     min_runner_contracts: int = 1
 
+    # How a trim's contract count is rounded. "up" (ceil) de-risks a small
+    # position hardest but makes the runner count jump: at 16% a level, 7
+    # contracts sell 2 each and keep 1. "nearest" (minimum 1) sells 1 each and
+    # keeps 3. See trim_qty.
+    trim_rounding: Literal["up", "nearest"] = "up"
+
     def __post_init__(self) -> None:
         if not self.trim_schedule:
             raise ValueError("trim_schedule must not be empty")
@@ -215,6 +221,8 @@ class RulesConfig:
 
         if self.confirm_breaches < 1:
             raise ValueError(f"confirm_breaches must be at least 1, got {self.confirm_breaches}")
+        if self.trim_rounding not in ("up", "nearest"):
+            raise ValueError(f"trim_rounding must be 'up' or 'nearest', got {self.trim_rounding!r}")
         if self.min_runner_contracts < 0:
             raise ValueError(f"min_runner_contracts cannot be negative, got {self.min_runner_contracts}")
 
@@ -398,7 +406,13 @@ def trail_stop_price(
     return round_price(max(peak_bid * multiplier, entry_fill))
 
 
-def trim_qty(original_qty: int, remaining: int, fraction: float, min_runner: int) -> int:
+def trim_qty(
+    original_qty: int,
+    remaining: int,
+    fraction: float,
+    min_runner: int,
+    rounding: Literal["up", "nearest"] = "up",
+) -> int:
     """How many contracts one trim sells.
 
     The fraction is of `original_qty` -- the size that actually filled -- so
@@ -410,10 +424,20 @@ def trim_qty(original_qty: int, remaining: int, fraction: float, min_runner: int
     and therefore never earns its breakeven stop. Clamped against `remaining`
     so at least `min_runner` contracts always survive -- that clamp, not the
     rounding, is what stops the ladder from closing the position.
+
+    `rounding="nearest"` rounds half up instead, with a minimum of 1 so a
+    small position still trims: 7 x 0.16 = 1.12 sells 1 rather than 2, and
+    13 x 0.16 = 2.08 sells 2 rather than 3, keeping more runners.
     """
     if fraction <= 0.0 or remaining <= min_runner:
         return 0
-    wanted = math.ceil(original_qty * fraction)
+    exact = original_qty * fraction
+    if rounding == "nearest":
+        # floor(x + 0.5), not round(): Python's round() is banker's rounding.
+        # The 1e-9 keeps a float like 2.4999999 from landing on the wrong side.
+        wanted = max(1, math.floor(exact + 0.5 + 1e-9))
+    else:
+        wanted = math.ceil(exact)
     return max(0, min(wanted, remaining - min_runner))
 
 
@@ -454,7 +478,9 @@ def evaluate(state: PositionState, bid: float, config: RulesConfig | None = None
         if fraction is None:
             actions.append(RunnerLevel(level_pct=level_pct, trigger_price=bid))
             continue
-        qty = trim_qty(state.original_qty, remaining, fraction, config.min_runner_contracts)
+        qty = trim_qty(
+            state.original_qty, remaining, fraction, config.min_runner_contracts, config.trim_rounding
+        )
         if qty > 0:
             actions.append(Trim(level_pct=level_pct, qty=qty, trigger_price=bid))
             remaining -= qty
