@@ -25,6 +25,7 @@ from options_scanner.webhook import (
     WebhookNotifier,
     looks_like_webhook,
     redact,
+    webhook_id,
 )
 
 OPT = OptionKey("SPX", date(2026, 10, 6), 7815.0, "P")
@@ -117,6 +118,11 @@ def test_the_token_is_never_logged():
     assert "1552390209428262974" in shown
     assert "RcnNKpSjkazV" not in shown
     assert shown.endswith("***")
+
+
+def test_the_id_is_the_safe_half_of_the_url():
+    assert webhook_id(URL) == "1552390209428262974"
+    assert webhook_id("nonsense") is None
 
 
 def test_redacting_a_non_webhook_says_so():

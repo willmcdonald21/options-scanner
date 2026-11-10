@@ -69,6 +69,12 @@ def looks_like_webhook(url: str) -> bool:
     return bool(_WEBHOOK_RE.match((url or "").strip()))
 
 
+def webhook_id(url: str) -> str | None:
+    """The webhook's id, which is safe to store and log, unlike its token."""
+    match = _WEBHOOK_RE.match((url or "").strip())
+    return match.group("id") if match else None
+
+
 def redact(url: str) -> str:
     """A webhook URL is a bearer credential: anyone holding it can post to the
     channel. Only the id is ever safe to log."""

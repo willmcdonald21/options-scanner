@@ -3,12 +3,22 @@
 No network and no Discord: the webhook is a fake that records posts and edits.
 """
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime
 
 from conftest import TRADING_DAY, make_settings
 
-from options_scanner.board import BoardRow, BoardSnapshot, offline_board, render_board, snapshot
+from options_scanner.board import (
+    MAX_ROWS,
+    STATE_KEY,
+    BoardRow,
+    BoardSnapshot,
+    PositionsBoard,
+    offline_board,
+    render_board,
+    snapshot,
+)
 from options_scanner.broker.base import Quote
 from options_scanner.broker.paper import PaperBroker
 from options_scanner.market_hours import EASTERN
@@ -16,6 +26,7 @@ from options_scanner.models import OptionKey, PositionState
 from options_scanner.notifier import COLOR_GREEN, COLOR_GREY, COLOR_RED, COLOR_YELLOW
 from options_scanner.position_manager import PositionManager
 from options_scanner.risk import RiskGate
+from options_scanner.webhook import EditResult
 
 SPY = OptionKey("SPY", TRADING_DAY, 772.0, "C")
 NOW = datetime(2026, 10, 6, 11, 0, 5, tzinfo=EASTERN)
@@ -163,6 +174,15 @@ def test_colour_follows_the_day_and_the_health():
     assert render_board(snap(row(), halted=True, halt_reason="x"), updated_at=None).color == COLOR_YELLOW
 
 
+def test_a_long_list_is_cut_short_within_discords_limits():
+    rows = [row(option=replace(SPY, strike=700.0 + i)) for i in range(MAX_ROWS + 3)]
+
+    note = render_board(snap(*rows), updated_at=None)
+
+    assert len(note.fields) == MAX_ROWS + 1
+    assert note.fields[-1][0] == "…and 3 more"
+
+
 def test_the_board_never_pings():
     assert not render_board(snap(row(), broker_connected=False), updated_at=None).mentions_owner
 
@@ -220,3 +240,228 @@ def test_without_a_manager_the_snapshot_reads_storage(storage):
     s = snapshot(settings=settings, storage=storage, risk=risk, now=NOW)
 
     assert s.rows == () and s.broker_connected is None
+
+
+# --- keeping one message current ---------------------------------------------
+
+HOOK = "https://discord.com/api/webhooks/4242/board-token"
+
+
+class FakeHook:
+    """Records posts and edits. `edits` scripts what each edit answers."""
+
+    def __init__(self, *, edits=None, post_id="900"):
+        self.url = HOOK
+        self.posts: list[list[dict]] = []
+        self.edited: list[tuple[str, list[dict]]] = []
+        self._edits = list(edits or [])
+        self._post_id = post_id
+
+    async def post_message(self, embeds):
+        self.posts.append(embeds)
+        return self._post_id
+
+    async def edit_message(self, message_id, embeds):
+        self.edited.append((message_id, embeds))
+        return self._edits.pop(0) if self._edits else EditResult.OK
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1_000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _board(storage, *, hook=None, market_open=True, positions=0):
+    settings, risk, broker, manager = _manager(storage)
+    for i in range(positions):
+        state = PositionState(
+            option=replace(SPY, strike=772.0 + i), entry_fill=1.0, original_qty=6,
+            remaining_qty=6, peak_bid=1.0,
+        )
+        manager.track(i + 1, state).last_bid = 1.10
+    board = PositionsBoard(
+        hook or FakeHook(), settings=settings, storage=storage, risk=risk,
+        manager=manager, broker=broker,
+    )
+    clock = Clock()
+    board._monotonic = clock
+    board._now = lambda: NOW
+    board._is_market_open = lambda: market_open
+    return board, clock, manager
+
+
+async def test_the_first_refresh_posts_and_remembers_the_message(storage):
+    board, _, _ = _board(storage)
+
+    assert await board.refresh() is True
+
+    assert len(board.webhook.posts) == 1
+    assert storage.get_state(STATE_KEY) == "4242:900"
+
+
+async def test_later_refreshes_edit_that_same_message(storage):
+    board, clock, _ = _board(storage, positions=1)
+    await board.refresh()
+
+    clock.now += 2
+    await board.refresh()
+
+    assert len(board.webhook.posts) == 1
+    assert [mid for mid, _ in board.webhook.edited] == ["900"]
+
+
+async def test_a_restart_edits_the_message_it_posted_before(storage):
+    storage.set_state(STATE_KEY, "4242:555")
+    board, _, _ = _board(storage)
+
+    await board.refresh()
+
+    assert board.webhook.posts == []
+    assert [mid for mid, _ in board.webhook.edited] == ["555"]
+
+
+async def test_a_new_webhook_starts_a_new_board(storage):
+    """A different webhook cannot edit the old one's message."""
+    storage.set_state(STATE_KEY, "1111:555")
+    board, _, _ = _board(storage)
+
+    await board.refresh()
+
+    assert board.webhook.edited == []
+    assert len(board.webhook.posts) == 1
+    assert storage.get_state(STATE_KEY) == "4242:900"
+
+
+async def test_a_deleted_board_is_posted_again(storage):
+    storage.set_state(STATE_KEY, "4242:555")
+    board, _, _ = _board(storage, hook=FakeHook(edits=[EditResult.MISSING], post_id="901"))
+
+    assert await board.refresh() is True
+
+    assert len(board.webhook.posts) == 1
+    assert storage.get_state(STATE_KEY) == "4242:901"
+
+
+async def test_a_failed_edit_keeps_the_message_and_tries_again(storage):
+    storage.set_state(STATE_KEY, "4242:555")
+    board, clock, _ = _board(storage, hook=FakeHook(edits=[EditResult.FAILED]))
+
+    assert await board.refresh() is False
+    clock.now += 2
+    assert await board.refresh() is True
+
+    assert board.webhook.posts == []
+    assert [mid for mid, _ in board.webhook.edited] == ["555", "555"]
+
+
+async def test_while_positions_are_open_in_session_every_refresh_edits(storage):
+    """So the Updated stamp stays seconds old for as long as the bot is alive."""
+    board, clock, _ = _board(storage, positions=1, market_open=True)
+    await board.refresh()
+
+    for _ in range(5):
+        clock.now += 2
+        assert await board.refresh() is True
+
+    assert len(board.webhook.edited) == 5
+
+
+async def test_an_idle_board_is_only_edited_when_something_changes(storage):
+    board, clock, _ = _board(storage, positions=0)
+    await board.refresh()
+
+    clock.now += 2
+    assert await board.refresh() is False
+
+    storage.set_halted(True, "halted by command")
+    clock.now += 2
+    assert await board.refresh() is True
+
+
+async def test_an_idle_board_still_beats_once_a_minute(storage):
+    board, clock, _ = _board(storage, positions=0)
+    await board.refresh()
+
+    clock.now += 59
+    assert await board.refresh() is False
+    clock.now += 1
+    assert await board.refresh() is True
+
+
+async def test_after_hours_an_open_position_is_idle_too(storage):
+    board, clock, _ = _board(storage, positions=1, market_open=False)
+    await board.refresh()
+
+    clock.now += 2
+    assert await board.refresh() is False
+
+
+async def test_a_failed_post_is_tried_again_next_time(storage):
+    class NoPost(FakeHook):
+        async def post_message(self, embeds):
+            self.posts.append(embeds)
+            return None
+
+    board, clock, _ = _board(storage, hook=NoPost())
+
+    assert await board.refresh() is False
+    clock.now += 2
+    assert await board.refresh() is False
+    assert len(board.webhook.posts) == 2
+    assert storage.get_state(STATE_KEY) is None
+
+
+async def test_the_card_sent_is_the_live_board(storage):
+    board, _, _ = _board(storage, positions=1)
+
+    await board.refresh()
+
+    (embed,) = board.webhook.posts[0]
+    assert embed["title"] == "Open positions"
+    assert f"<t:{int(NOW.timestamp())}:R>" in embed["description"]
+    assert "+10.0%" in embed["fields"][0]["value"]
+
+
+async def test_shutdown_marks_the_board_offline(storage):
+    board, _, _ = _board(storage, positions=2)
+    await board.refresh()
+
+    await board.shutdown()
+
+    message_id, (embed,) = board.webhook.edited[-1]
+    assert message_id == "900"
+    assert embed["title"] == "Bot offline"
+    assert "2 positions still open" in embed["description"]
+
+
+async def test_shutdown_with_no_board_posts_nothing(storage):
+    board, _, _ = _board(storage)
+
+    await board.shutdown()
+
+    assert board.webhook.posts == [] and board.webhook.edited == []
+
+
+async def test_a_failing_webhook_never_escapes_the_loop(storage):
+    class Broken(FakeHook):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def post_message(self, embeds):
+            self.attempts += 1
+            raise RuntimeError("discord is on fire")
+
+    board, _, _ = _board(storage, hook=Broken())
+    board.settings.board.refresh_seconds = 0.0  # not re-validated after construction
+
+    async def stop_soon():
+        await asyncio.sleep(0.05)
+        board._running = False
+
+    await asyncio.gather(board.run(), stop_soon())
+
+    assert board.webhook.attempts > 1  # it kept going after the first failure

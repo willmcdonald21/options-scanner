@@ -17,10 +17,14 @@ so a slow Discord can never delay a stop.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 
-from options_scanner.market_hours import EASTERN, describe as describe_session, now_et
+from options_scanner.market_hours import EASTERN, describe as describe_session, is_market_open, now_et
 from options_scanner.models import OptionKey
 from options_scanner.notifier import (
     COLOR_GREEN,
@@ -35,8 +39,23 @@ from options_scanner.notifier import (
     signed_pct,
 )
 from options_scanner.rules import next_level
+from options_scanner.webhook import EditResult, webhook_id
+
+logger = logging.getLogger("options_scanner.board")
 
 BOARD_FOOTER = "options-scanner · positions board · edited in place"
+
+# bot_state key holding "<webhook id>:<message id>", so a restart edits the
+# same message instead of starting a second board.
+STATE_KEY = "positions_board_message"
+
+# Discord caps an embed at 25 fields and 6,000 characters. The position cap
+# keeps this to two or three in practice; the limit is for a config that
+# allows many.
+MAX_ROWS = 10
+
+# A shutdown must not hang on Discord.
+SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -249,8 +268,15 @@ def render_board(snap: BoardSnapshot, *, updated_at: datetime | None) -> Notific
         footer=BOARD_FOOTER,
         color=_color(snap),
     )
-    for row in snap.rows:
+    for row in snap.rows[:MAX_ROWS]:
         note.add(contract_label(row.option), _row_text(row, snap), inline=False)
+    if len(snap.rows) > MAX_ROWS:
+        hidden = snap.rows[MAX_ROWS:]
+        note.add(
+            f"…and {len(hidden)} more",
+            ", ".join(contract_label(r.option) for r in hidden)[:1000],
+            inline=False,
+        )
     return note
 
 
@@ -271,3 +297,145 @@ def offline_board(*, stopped_at: datetime, open_positions: int) -> Notification:
         footer=BOARD_FOOTER,
         color=COLOR_GREY,
     )
+
+
+# --- keeping one message current ---------------------------------------------
+
+
+class PositionsBoard:
+    """Keeps the board message up to date.
+
+    While positions are open in the session the board is edited every
+    `board.refresh_seconds`, changed or not, so its "Updated" stamp stays
+    a few seconds old for as long as the bot is alive. Otherwise it is edited
+    only when something changed, plus once every `idle_refresh_seconds` as a
+    heartbeat.
+
+    Never raises into its caller, and runs as its own task: a slow or broken
+    Discord costs the board, never a poll or a stop.
+    """
+
+    def __init__(
+        self,
+        webhook,
+        *,
+        settings,
+        storage,
+        risk,
+        manager=None,
+        broker=None,
+    ):
+        self.webhook = webhook
+        self.settings = settings
+        self.storage = storage
+        self.risk = risk
+        self.manager = manager
+        self.broker = broker
+        self._webhook_id = webhook_id(webhook.url) or "?"
+        self._message_id: str | None = None
+        self._loaded = False
+        self._last_key: str | None = None
+        self._last_edit: float | None = None
+        self._running = False
+        # Injectable so a test can move time instead of waiting for it.
+        self._monotonic = time.monotonic
+        self._now = now_et
+        self._is_market_open = is_market_open
+
+    # --- the message id, across restarts ---------------------------------
+
+    def _stored_message_id(self) -> str | None:
+        if not self._loaded:
+            self._loaded = True
+            raw = self.storage.get_state(STATE_KEY) or ""
+            hook, _, message = raw.partition(":")
+            # A different webhook cannot edit the old one's message.
+            self._message_id = message if hook == self._webhook_id and message else None
+        return self._message_id
+
+    def _remember(self, message_id: str) -> None:
+        self._message_id = message_id
+        self._loaded = True
+        self.storage.set_state(STATE_KEY, f"{self._webhook_id}:{message_id}")
+
+    # --- one refresh -------------------------------------------------------
+
+    def _busy(self) -> bool:
+        try:
+            in_session = self._is_market_open()
+        except Exception:
+            in_session = True
+        return bool(self.manager is not None and self.manager.managed and in_session)
+
+    async def refresh(self, *, force: bool = False) -> bool:
+        """Bring the board up to date. Returns whether it was sent."""
+        snap = snapshot(
+            settings=self.settings, storage=self.storage, risk=self.risk,
+            manager=self.manager, broker=self.broker, now=self._now(),
+        )
+        key = json.dumps(render_board(snap, updated_at=None).to_webhook_embed(), sort_keys=True)
+        now = self._monotonic()
+        unchanged = key == self._last_key
+        recent = self._last_edit is not None and now - self._last_edit < self.settings.board.idle_refresh_seconds
+        if not force and not self._busy() and unchanged and recent:
+            return False
+
+        card = render_board(snap, updated_at=self._now())
+        if not await self._show([card.to_webhook_embed()]):
+            return False
+        self._last_key = key
+        self._last_edit = now
+        return True
+
+    async def _show(self, embeds: list[dict]) -> bool:
+        """Edit the board message, or post one if there is none (or it was
+        deleted). Returns whether it landed."""
+        message_id = self._stored_message_id()
+        if message_id is not None:
+            result = await self.webhook.edit_message(message_id, embeds)
+            if result is EditResult.OK:
+                return True
+            if result is EditResult.FAILED:
+                return False
+            self._message_id = None  # MISSING: deleted by hand, start a new one
+        posted = await self.webhook.post_message(embeds)
+        if posted is None:
+            return False
+        self._remember(posted)
+        logger.info("positions board posted as message %s", posted)
+        return True
+
+    # --- the loop ------------------------------------------------------------
+
+    async def run(self) -> None:
+        self._running = True
+        logger.info("positions board started (every %.1fs)", self.settings.board.refresh_seconds)
+        try:
+            while self._running:
+                try:
+                    await self.refresh()
+                except Exception:
+                    logger.exception("positions board refresh failed")
+                await asyncio.sleep(self.settings.board.refresh_seconds)
+        finally:
+            self._running = False
+
+    async def shutdown(self) -> None:
+        """Mark the board offline, so it does not pass for live after the bot
+        stops. Best effort, and never posts a new message to say so."""
+        self._running = False
+        try:
+            message_id = self._stored_message_id()
+            if message_id is None:
+                return
+            if self.manager is not None:
+                open_positions = len(self.manager.managed)
+            else:
+                open_positions = self.storage.open_position_count()
+            card = offline_board(stopped_at=self._now(), open_positions=open_positions)
+            await asyncio.wait_for(
+                self.webhook.edit_message(message_id, [card.to_webhook_embed()]),
+                SHUTDOWN_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            logger.exception("could not mark the positions board offline")
