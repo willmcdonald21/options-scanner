@@ -520,6 +520,8 @@ class SwiftAlertBot(discord.Client):
                 f"  stop {stop} ({state.stop_reason or 'unprotected'}) · "
                 f"trims done {sorted(state.fired_levels) or 'none'} · next {nxt}"
             )
+            if state.lock_qty and state.lock_stop:
+                lines[-1] += f"\n  {state.lock_qty} locked runners · their stop ${state.lock_stop:.2f}"
         await self.post(
             status_report(
                 mode=self.settings.mode.value,

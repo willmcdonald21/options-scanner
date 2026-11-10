@@ -33,6 +33,8 @@ from options_scanner.notifier import (
     runner_level,
     signed_pct,
     stale_quotes,
+    lock_stop_moved,
+    runners_locked,
     stop_moved,
     stopped_out,
     trail_armed,
@@ -431,3 +433,27 @@ def test_a_step_stop_card_names_the_level_that_moved_it():
         level_pct=25, locks_pct=0, today=TODAY,
     )
     assert "Price reached +25% — stop moved to break-even" in be.description
+
+
+def test_the_runner_lock_cards_say_who_is_locked_and_where():
+    locked = runners_locked(
+        option=OPT, qty=2, runners=5, stop=1.75, locks_pct=75, level_pct=100,
+        other_stop=1.50, today=TODAY,
+    )
+    assert "2 of 5 runners now trail one level behind" in locked.description
+    assert "their stop is $1.75 (+75%)" in locked.description
+    assert "The other 3 keep $1.50" in locked.description
+
+    moved = lock_stop_moved(
+        option=OPT, old=1.75, new=2.00, qty=2, level_pct=125, locks_pct=100, today=TODAY,
+    )
+    assert "Price reached +125% — the 2 locked runners' stop raised to $2.00 (+100%)" in moved.description
+
+
+def test_a_locked_stop_out_says_the_rest_are_still_held():
+    note = stopped_out(
+        option=OPT, qty=2, stop_price=2.25, fill_price=2.24, entry_price=1.00,
+        realized=248.0, pnl_pct=124.0, remaining=3, today=TODAY,
+    )
+    assert note.title.startswith("SOLD 2 LOCKED")
+    assert "3 still held" in note.description

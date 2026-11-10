@@ -565,6 +565,50 @@ def stop_moved(
     return note
 
 
+def runners_locked(
+    *, option: OptionKey, qty: int, runners: int, stop: float, locks_pct: int, level_pct: int,
+    other_stop: float | None, jump_url: str | None = None, today: date | None = None,
+) -> Notification:
+    """The runner lock fired: part of the runners now trail one level behind."""
+    rest = runners - qty
+    description = (
+        f"**{qty} of {runners} runners now trail one level behind**\n"
+        f"Price reached +{level_pct}% — their stop is {price(stop)} ({locks_pct:+d}%) "
+        "and moves up a level with every +25%."
+    )
+    if rest > 0 and other_stop is not None:
+        description += f"\nThe other {rest} keep {price(other_stop)}."
+    note = Notification(
+        title=contract_label(option, today),
+        level=Level.SUCCESS,
+        description=description,
+        jump_url=jump_url,
+    )
+    note.add("Locked", f"{qty} @ {price(stop)}")
+    if rest > 0 and other_stop is not None:
+        note.add("Others", f"{rest} @ {price(other_stop)}")
+    return note
+
+
+def lock_stop_moved(
+    *, option: OptionKey, old: float | None, new: float, qty: int, level_pct: int, locks_pct: int,
+    jump_url: str | None = None, today: date | None = None,
+) -> Notification:
+    was = price(old) if old is not None else "none"
+    note = Notification(
+        title=contract_label(option, today),
+        level=Level.SUCCESS,
+        description=(
+            f"**LOCKED STOP → {price(new)}**\n"
+            f"Price reached +{level_pct}% — the {qty} locked runner{'s' if qty != 1 else ''}' "
+            f"stop raised to {price(new)} ({locks_pct:+d}%)."
+        ),
+        jump_url=jump_url,
+    )
+    note.add("Locked stop", f"{was} → {price(new)}")
+    return note
+
+
 def trail_armed(
     *, option: OptionKey, at_price: float, multiplier: float, jump_url: str | None = None,
     today: date | None = None,
@@ -648,12 +692,22 @@ def stopped_out(
     pnl_pct: float,
     jump_url: str | None = None,
     today: date | None = None,
+    remaining: int = 0,
 ) -> Notification:
-    """The exit card, matching the advisor's SOLD ALL shape."""
+    """The exit card, matching the advisor's SOLD ALL shape. With `remaining`
+    above 0 it is the locked runners' stop-out, and the rest are still held."""
+    if remaining > 0:
+        title = f"SOLD {qty} LOCKED {signed_pct(pnl_pct)} — {contract_label(option, today)}"
+        description = (
+            f"The locked runners' stop hit. {remaining} still held on their own stop."
+        )
+    else:
+        title = f"SOLD ALL {signed_pct(pnl_pct)} — {contract_label(option, today)}"
+        description = contract_sentence(option, "Fully out of") + "."
     note = Notification(
-        title=f"SOLD ALL {signed_pct(pnl_pct)} — {contract_label(option, today)}",
+        title=title,
         level=Level.ERROR if pnl_pct < 0 else Level.SUCCESS,
-        description=contract_sentence(option, "Fully out of") + ".",
+        description=description,
         jump_url=jump_url,
     )
     if entry_price:

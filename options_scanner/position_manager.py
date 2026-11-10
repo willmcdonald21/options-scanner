@@ -44,6 +44,8 @@ from options_scanner.notifier import (
     phantom_exit,
     runner_level as runner_level_note,
     stale_quotes,
+    lock_stop_moved,
+    runners_locked,
     stop_moved,
     stopped_out,
     trail_armed,
@@ -54,8 +56,10 @@ from options_scanner.rules import (
     ArmTrail,
     Breach,
     ClearBreach,
+    LockRunners,
     RulesConfig,
     RunnerLevel,
+    SetLockStop,
     SetStop,
     StopOut,
     Trim,
@@ -229,6 +233,7 @@ class PositionManager:
                     f"{summary} — **broker reports {held.qty}**; correcting down to the broker's number"
                 )
                 state.remaining_qty = min(state.remaining_qty, held.qty)
+                state.lock_qty = min(state.lock_qty, state.remaining_qty)
                 self.storage.save_position(position_id, state, managed.realized)
             else:
                 lines.append(f"{summary} — matches the broker")
@@ -496,6 +501,38 @@ class PositionManager:
             )
             return
 
+        if isinstance(action, LockRunners):
+            apply_action(state, action)
+            tick.add(
+                runners_locked(
+                    option=state.option,
+                    qty=state.lock_qty,
+                    runners=action.runners,
+                    stop=action.stop_price,
+                    locks_pct=action.locks_pct,
+                    level_pct=action.level_pct,
+                    other_stop=state.stop_price,
+                    jump_url=managed.jump_url,
+                )
+            )
+            return
+
+        if isinstance(action, SetLockStop):
+            previous = state.lock_stop
+            apply_action(state, action)
+            tick.add(
+                lock_stop_moved(
+                    option=state.option,
+                    old=previous,
+                    new=action.price,
+                    qty=state.lock_qty,
+                    level_pct=action.level_pct,
+                    locks_pct=action.locks_pct,
+                    jump_url=managed.jump_url,
+                )
+            )
+            return
+
         if isinstance(action, Trim):
             await self._do_trim(managed, action, tick)
             return
@@ -644,7 +681,9 @@ class PositionManager:
             )
             return
 
-        apply_action(state, StopOut(outcome.filled_qty, action.stop_price, action.bid))
+        apply_action(
+            state, StopOut(outcome.filled_qty, action.stop_price, action.bid, action.tranche)
+        )
         fill_price = outcome.avg_price or 0.0
         realized_per = fill_price - state.entry_fill
         await self._book_sale(
@@ -659,7 +698,10 @@ class PositionManager:
             status=outcome.status,
             position_id=managed.position_id,
             limit_price=fill_price,
-            detail=f"stop {action.stop_price:.2f}; {outcome.detail}",
+            detail=(
+                f"{'locked runners ' if action.tranche == 'locked' else ''}"
+                f"stop {action.stop_price:.2f}; {outcome.detail}"
+            ),
         )
 
         pnl_pct = (realized_per / state.entry_fill * 100) if state.entry_fill else 0.0
@@ -674,6 +716,7 @@ class PositionManager:
                 realized=managed.realized,
                 pnl_pct=pnl_pct,
                 jump_url=managed.jump_url,
+                remaining=state.remaining_qty if action.tranche == "locked" else 0,
             )
         )
 
@@ -844,6 +887,7 @@ class PositionManager:
             tick.add(phantom_exit(occ_symbol=managed.symbol, expected=expected, actual=held))
 
         managed.state.remaining_qty = held
+        managed.state.lock_qty = min(managed.state.lock_qty, max(held, 0))
         if held <= 0:
             managed.state.closed = True
             self.storage.save_position(managed.position_id, managed.state, managed.realized)

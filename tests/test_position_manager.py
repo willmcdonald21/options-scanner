@@ -220,6 +220,63 @@ async def test_the_runners_stop_out_at_the_plus_50_step(storage):
     assert await broker.get_positions() == []
 
 
+LOCK_OVERRIDES = dict(
+    trim={
+        "schedule": [(25, 16), (50, 16), (75, 16), (100, 16)],
+        "runner_levels": [],
+        "rounding": "nearest",
+    },
+    stops={"steps": [(25, 0), (75, 25), (100, 50)], "runner_lock": {"at_pct": 100}},
+    trail={"enabled": False},
+)
+
+
+async def test_the_locked_runners_sell_on_their_own_stop_and_the_rest_keep_running(storage):
+    feed, broker, manager, pipeline, _ = build(storage, **LOCK_OVERRIDES)
+    await enter(pipeline, feed)  # 20 @ 0.48: 3 a level, 8 runners, 4 lock
+
+    for bid in (0.62, 0.74, 0.86):
+        feed.set(bid)
+        await manager.poll_once()
+    feed.set(0.98)  # +104%: the last trim, and the lock fires
+    notes = await manager.poll_once()
+    state = manager.managed[SPX_OCC].state
+    assert (state.remaining_qty, state.lock_qty, state.lock_stop, state.stop_price) == (8, 4, 0.84, 0.72)
+    assert has(notes, "4 of 8 runners now trail one level behind")
+    assert has(notes, "The other 4 keep $0.72")
+
+    feed.set(1.21)  # +152%: one level behind = +125% = 1.08
+    notes = await manager.poll_once()
+    assert state.lock_stop == 1.08
+    assert has(notes, "LOCKED STOP")
+
+    for bid in (1.07, 1.06):  # two quotes under the locked stop
+        feed.set(bid)
+        notes = await manager.poll_once()
+    assert has(notes, "SOLD 4 LOCKED")
+    assert SPX_OCC in manager.managed  # the other 4 are still held
+    assert (state.remaining_qty, state.lock_qty, state.stop_price) == (4, 0, 0.72)
+    (position,) = await broker.get_positions()
+    assert position.qty == 4
+
+    for bid in (0.71, 0.70):
+        feed.set(bid)
+        await manager.poll_once()
+    assert SPX_OCC not in manager.managed
+    assert await broker.get_positions() == []
+
+
+async def test_the_lock_survives_a_restart(storage):
+    feed, broker, manager, pipeline, _ = build(storage, **LOCK_OVERRIDES)
+    await enter(pipeline, feed)
+    for bid in (0.62, 0.74, 0.86, 0.98):
+        feed.set(bid)
+        await manager.poll_once()
+
+    (_, loaded), = storage.open_positions()
+    assert (loaded.lock_armed, loaded.lock_qty, loaded.lock_stop) == (True, 4, 0.84)
+
+
 async def test_the_runner_levels_sell_nothing_and_are_each_reported(storage):
     feed, _, manager, pipeline, _ = build(storage)
     await enter(pipeline, feed)
