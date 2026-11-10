@@ -863,3 +863,88 @@ def test_next_level_with_a_step_is_never_exhausted():
 def test_a_step_must_be_positive():
     with pytest.raises(ValueError, match="positive percent"):
         RulesConfig(runner_step_pct=0)
+
+
+# --- step stops ------------------------------------------------------------
+#
+# Breakeven at +25%, then the stop trails two levels behind the price and
+# holds at +50% above +100%. One contract of six sold at each level.
+
+STEPS = ((25, 0), (75, 25), (100, 50))
+STEP_CFG = RulesConfig(
+    trim_schedule=((25, 0.16), (50, 0.16), (75, 0.16), (100, 0.16)),
+    runner_levels=(),
+    stop_steps=STEPS,
+)
+
+
+def test_step_stops_trail_two_levels_behind_the_price():
+    result = walk([1.10, 1.25, 1.50, 1.75, 2.00], _state(1.00, 6), STEP_CFG)
+
+    assert [(t.level_pct, t.qty) for t in result.trims] == [(25, 1), (50, 1), (75, 1), (100, 1)]
+    assert result.state.remaining_qty == 2
+    # +25% -> breakeven, +50% holds, +75% -> +25%, +100% -> +50%.
+    assert [(s.level_pct, s.price, s.reason) for s in result.stops] == [
+        (25, 1.00, "breakeven"),
+        (75, 1.25, "trail"),
+        (100, 1.50, "trail"),
+    ]
+
+
+def test_step_stop_holds_at_plus_50_for_the_runners():
+    # Below a $2.50 peak the default peak trail is still under breakeven.
+    result = walk([1.25, 1.50, 1.75, 2.00, 2.40], _state(1.00, 6), STEP_CFG)
+    assert result.state.stop_price == 1.50
+    assert result.state.remaining_qty == 2
+
+
+def test_runners_stop_out_at_plus_50_after_confirmation():
+    result = walk([1.25, 1.50, 1.75, 2.00, 1.60, 1.49, 1.48], _state(1.00, 6), STEP_CFG)
+    assert [(s.qty, s.stop_price) for s in result.stop_outs] == [(2, 1.50)]
+    assert result.state.closed
+
+
+def test_reversal_after_plus_75_exits_at_plus_25():
+    result = walk([1.25, 1.50, 1.75, 1.30, 1.25, 1.24], _state(1.00, 6), STEP_CFG)
+    assert [(s.qty, s.stop_price) for s in result.stop_outs] == [(3, 1.25)]
+
+
+def test_a_gap_through_every_level_moves_the_stop_once():
+    result = walk([2.10], _state(1.00, 6), STEP_CFG)
+    assert [t.qty for t in result.trims] == [1, 1, 1, 1]
+    assert [(s.level_pct, s.price) for s in result.stops] == [(100, 1.50)]
+
+
+def test_step_stop_protects_a_position_too_small_to_trim():
+    """One contract never trims, so breakeven-on-fill would never protect
+    it. The step stop is driven by the price, so it still does."""
+    result = walk([1.25, 1.80], _state(1.00, 1), STEP_CFG)
+    assert result.trims == []
+    assert result.stop_prices == [1.00, 1.25]
+
+
+def test_on_trim_fill_defers_to_step_stops():
+    state = _state(1.00, 6)
+    assert on_trim_fill(state, 25, STEP_CFG) == []
+
+
+def test_no_steps_keeps_breakeven_on_fill():
+    assert CFG.stop_steps == ()
+    assert on_trim_fill(_state(1.00, 6), 25, CFG) == [SetStop(price=1.00, reason="breakeven")]
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        ((75, 25), (25, 0)),        # out of order
+        ((25, 0), (25, 10)),        # duplicate level
+        ((25, 25),),                # stop at the level that set it
+        ((25, 30),),                # stop above it
+        ((0, -10),),                # level must be positive
+        ((25, -100),),              # not a stop at all
+        ((25, 10), (75, 5)),        # loosens
+    ],
+)
+def test_bad_stop_steps_are_rejected(steps):
+    with pytest.raises(ValueError):
+        RulesConfig(stop_steps=steps)

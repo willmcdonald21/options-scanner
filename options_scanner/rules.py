@@ -38,6 +38,10 @@ In evaluation order:
    60% below the peak, tightening to 0.55 above +200% and 0.70 above +500%.
    It is floored at the entry fill, so arming the trail can never install a
    stop that would book a loss.
+4b. **Step stops** (when `stop_steps` is set) replace step 4: once the peak
+   reaches a step's level the stop moves to that step's gain -- e.g. +25% ->
+   breakeven, +75% -> +25%, +100% -> +50%. Price-driven, so a position too
+   small to trim at a level still gets its stop.
 7. **Stop breach** requires the bid to sit at or below the stop for two
    consecutive quotes before exiting, so one bad tick on a wide 0DTE spread
    cannot flatten the position.
@@ -110,8 +114,17 @@ class RulesConfig:
     # banded by how far the position has run. See DEFAULT_TRAIL_SCHEDULE.
     trail_schedule: tuple[tuple[int, float], ...] = DEFAULT_TRAIL_SCHEDULE
 
-    # The trim whose fill promotes the stop to breakeven.
+    # The trim whose fill promotes the stop to breakeven. Unused when
+    # stop_steps is set: the steps own the stop from the first level on.
     breakeven_after_level_pct: int = 25
+
+    # Step stops: (level reached in whole percent, stop moves to this percent
+    # gain). Driven by the price, not by a trim fill, so a position too small
+    # to trim at a level still gets that level's stop. E.g.
+    #   ((25, 0), (75, 25), (100, 50))
+    # = breakeven at +25%, then the stop trails two levels behind the price
+    # and holds at +50% above +100%. Empty = the original breakeven-on-fill.
+    stop_steps: tuple[tuple[int, float], ...] = ()
 
     # Consecutive quotes at or below the stop required to exit. 0DTE spreads
     # are wide enough that a single print through the stop is often noise.
@@ -173,6 +186,25 @@ class RulesConfig:
             raise ValueError(
                 f"trail_schedule multipliers must not loosen as the gain grows, got {multipliers}"
             )
+
+        step_levels = [level for level, _ in self.stop_steps]
+        if step_levels != sorted(step_levels):
+            raise ValueError(f"stop_steps must be in ascending level order, got {step_levels}")
+        if len(set(step_levels)) != len(step_levels):
+            raise ValueError(f"stop_steps has duplicate levels: {step_levels}")
+        step_stops = [stop for _, stop in self.stop_steps]
+        for level, stop in self.stop_steps:
+            if level <= 0:
+                raise ValueError(f"stop step level must be a positive percent, got {level}")
+            # At or above the level, the step would install a stop at or
+            # above the bid that triggered it and sell on the next quote.
+            if not -100.0 < stop < level:
+                raise ValueError(
+                    f"stop step at +{level}% must move the stop below +{level}% "
+                    f"(and above -100%), got {stop}"
+                )
+        if step_stops != sorted(step_stops):
+            raise ValueError(f"stop_steps must not loosen as the level rises, got {step_stops}")
 
         if self.runner_step_pct is not None and self.runner_step_pct <= 0:
             raise ValueError(f"runner_step_pct must be a positive percent, got {self.runner_step_pct}")
@@ -258,6 +290,10 @@ class RunnerLevel:
 class SetStop:
     price: float
     reason: Literal["breakeven", "trail"]
+    # Set by a step stop, for the card: the level the price reached, and the
+    # gain the new stop locks in. None for breakeven-on-fill and the peak trail.
+    level_pct: int | None = None
+    locks_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -429,6 +465,31 @@ def evaluate(state: PositionState, bid: float, config: RulesConfig | None = None
     #    them, and a stop premised on a fill that never happened would be a
     #    lie about how protected the position is.
 
+    # 4b. Step stops. The highest step the peak has reached sets the stop;
+    #     a gap through several steps moves it once, to the highest. Driven
+    #     by the price rather than a fill, so a 1-contract position that
+    #     never trims is still protected. Each step's stop sits below its
+    #     own level (validated), so this cannot install a stop above the bid
+    #     that reached it.
+    stop = state.stop_price
+    reached = [
+        (level, locks) for level, locks in config.stop_steps
+        if peak >= level_price(state.entry_fill, level)
+    ]
+    if reached:
+        level, locks = reached[-1]
+        candidate = round_price(level_price(state.entry_fill, locks))
+        if stop is None or candidate > stop:
+            stop = candidate
+            actions.append(
+                SetStop(
+                    price=candidate,
+                    reason="breakeven" if locks == 0 else "trail",
+                    level_pct=level,
+                    locks_pct=locks,
+                )
+            )
+
     # 5. Arm the trail.
     armed = state.trail_armed
     if not armed and bid >= level_price(state.entry_fill, config.trail_arm_pct):
@@ -438,7 +499,6 @@ def evaluate(state: PositionState, bid: float, config: RulesConfig | None = None
     # 6. Ratchet the trail. Only ever upward. The candidate is floored at the
     #    entry fill inside trail_stop_price, so this cannot install a losing
     #    stop on a winning position.
-    stop = state.stop_price
     if armed:
         candidate = trail_stop_price(state.entry_fill, peak, config.trail_schedule)
         if stop is None or candidate > stop:
@@ -448,7 +508,9 @@ def evaluate(state: PositionState, bid: float, config: RulesConfig | None = None
     # 7. Stop breach, with confirmation. Checked last: a bid cannot be both
     #    at a trim level and under the stop, because the stop never exceeds
     #    breakeven until the trail arms, and the trail only arms once every
-    #    lower level has already fired.
+    #    lower level has already fired. A step stop sits below the level that
+    #    set it, and every trim at or below the peak has already fired, so the
+    #    same holds with steps.
     if stop is not None and bid <= stop:
         count = state.consecutive_breaches + 1
         if count >= config.confirm_breaches:
@@ -477,6 +539,8 @@ def on_trim_fill(
     config = config or RulesConfig()
     if state.closed:
         return []
+    if config.stop_steps:
+        return []  # the step stops already moved it, on the price
     if level_pct < config.breakeven_after_level_pct:
         return []
     breakeven = round_price(state.entry_fill)
