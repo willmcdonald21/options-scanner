@@ -41,6 +41,7 @@ alerts.
 QQQ 718P 1.99              today's QQQ 718 put at $1.99
 iwm 271p .7                case and a bare decimal are fine
 QQQ 10/16 718P 1.99        a date overrides "today"
+TSLA 397.5C                no price: buy at market, whatever the ask
 ```
 
 No date means **today's contract**. That was checked against the live chain:
@@ -50,9 +51,19 @@ live market stands in for one: the alert is skipped if the ask is more than
 **25% below** its price (a typo, or not the contract meant) or if there is no
 ask to check against.
 
+**With no price**, there is nothing to hold the ask against, so there is **no
+price buffer**: neither the 15%-above cap nor the 25%-below check applies, and
+it buys at market whatever the ask. Every other check still does (halt, session,
+cutoff, daily loss limit, position slots, the contract existing, the
+per-contract limit if set), and it still needs a live ask, because that is what
+the size is worked out from. Two no-price alerts for the same contract within
+the duplicate window count as a re-paste; add a price to buy it again sooner.
+Entries are market orders either way.
+
 **An average-down**, as the advisor's AVERAGING DOWN card or as a one-line
 alert with `avg` (also `avg down`, `average down`, `averaging down`) at the
-front or back: `avg QQQ 718P 1.50`, `QQQ 718P 1.50 avg`. It is **treated as a
+front or back: `avg QQQ 718P 1.50`, `QQQ 718P 1.50 avg`, or with no price,
+`avg QQQ 718P`. It is **treated as a
 normal buy**, including when you already hold that contract. The card buys at
 its "Added @" price.
 
@@ -72,9 +83,9 @@ buys more.
 
 | Reason | Rule |
 |---|---|
-| `ask_above_cap` | ask more than **15% above** the alert price — not chasing |
-| `no_ask` | no live ask to check the price against, so no market order |
-| `price_mismatch` | alerts with no trim targets (one-line, or a card without them): ask more than **25% below**, or no ask |
+| `ask_above_cap` | ask more than **15% above** the alert price — not chasing. Not applied when the alert names no price |
+| `no_ask` | no live ask to check the price against, so no market order. With no price in the alert, no ask means nothing to size from, dry run included |
+| `price_mismatch` | alerts with no trim targets (one-line, or a card without them): ask more than **25% below**, or no ask. Not applied when the alert names no price |
 | `budget_too_small` | the budget can't buy one contract: a lotto gets **half** a trade's budget, a super lotto **a quarter** |
 | market / cutoff | outside 9:30–16:00 ET; **no new entries after 15:30** |
 | limits | **2 different contracts** already open, or the **daily loss limit** reached. There is no cap on the number of trades. |
