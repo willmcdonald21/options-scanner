@@ -106,6 +106,18 @@ def test_the_first_stop_level_comes_from_the_config():
     assert "none until +50%" in text
 
 
+def test_an_initial_stop_says_it_caps_the_loss():
+    text = body(render_board(snap(row(stop=0.65)), updated_at=None))
+
+    assert "Stop $0.65 (initial, max loss -35.0%)" in text
+
+
+def test_with_an_initial_stop_step_a_brand_new_position_says_none_yet():
+    text = body(render_board(snap(row(stop=None), first_stop_pct=0), updated_at=None))
+
+    assert "Stop **none yet**" in text
+
+
 def test_a_stepped_stop_says_what_it_locks_in():
     text = body(render_board(snap(row(stop=1.25)), updated_at=None))
 

@@ -119,6 +119,16 @@ def parse_close_command(text: str) -> list[str] | None:
 FLATTEN_CONFIRM_SECONDS = 60
 
 
+def _stop_reason_text(state) -> str:
+    """For !status. A stop under the entry is the initial stop, though it is
+    stored with the "trail" reason (the column allows only two)."""
+    if state.stop_price is None:
+        return "unprotected"
+    if state.stop_price < state.entry_fill:
+        return "initial"
+    return state.stop_reason or "trail"
+
+
 class StartupError(RuntimeError):
     """A required channel is missing or unusable. Fatal by design."""
 
@@ -726,7 +736,7 @@ class SwiftAlertBot(discord.Client):
                 f"`{state.option.occ_symbol}`\n"
                 f"  {state.remaining_qty}/{state.original_qty} left · entry ${state.entry_fill:.3f} · "
                 f"peak ${state.peak_bid:.3f} ({state.gain_pct:+.1f}%)\n"
-                f"  stop {stop} ({state.stop_reason or 'unprotected'}) · "
+                f"  stop {stop} ({_stop_reason_text(state)}) · "
                 f"trims done {sorted(state.fired_levels) or 'none'} · next {nxt}"
             )
             if state.lock_qty and state.lock_stop:

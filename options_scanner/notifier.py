@@ -547,7 +547,15 @@ def stop_moved(
         ),
         "trail": "Trailing stop ratcheted up with a new peak.",
     }.get(reason, reason)
-    if level_pct is not None and locks_pct is not None:
+    initial = level_pct == 0 and locks_pct is not None and locks_pct < 0
+    if initial:
+        held = f"The {remaining}" if remaining else "This position"
+        explanation = (
+            f"Initial stop {price(new)} ({locks_pct:+g}%). {held} "
+            f"{'sell' if remaining else 'sells'} there if the price falls back; "
+            "it only moves up from here."
+        )
+    elif level_pct is not None and locks_pct is not None:
         held = f"The remaining {remaining}" if remaining else "This position"
         if locks_pct == 0:
             explanation = (
@@ -562,12 +570,13 @@ def stop_moved(
     # Same layout as the runner card: the contract heads it, the event under.
     note = Notification(
         title=contract_label(option, today),
-        level=Level.SUCCESS,
+        # The initial stop protects against a loss; it is not a profit event.
+        level=Level.INFO if initial else Level.SUCCESS,
         description=f"**STOP → {price(new)}**\n{explanation}",
         jump_url=jump_url,
     )
     note.add("Stop", f"{was} → {price(new)}")
-    note.add("Why", f"`{reason}`")
+    note.add("Why", "`initial`" if initial else f"`{reason}`")
     return note
 
 

@@ -193,10 +193,16 @@ def _first_stop_pct(settings) -> int | None:
 
 def _stop_text(row: BoardRow, first_stop_pct: int | None) -> str:
     if row.stop is None:
-        until = f" until +{first_stop_pct}%" if first_stop_pct else ""
+        # first_stop_pct 0 is an initial stop: set on the first quote.
+        until = f" until +{first_stop_pct}%" if first_stop_pct else " yet"
         return f"Stop **none{until}**"
     locks = (row.stop / row.entry - 1.0) * 100.0 if row.entry else 0.0
-    why = "break-even" if abs(locks) < 0.05 else f"locks {signed_pct(locks)}"
+    if abs(locks) < 0.05:
+        why = "break-even"
+    elif locks < 0:
+        why = f"initial, max loss {signed_pct(locks)}"
+    else:
+        why = f"locks {signed_pct(locks)}"
     return f"Stop {price(row.stop)} ({why})"
 
 

@@ -552,3 +552,14 @@ async def test_a_broken_alerts_webhook_is_turned_off(storage):
 
     assert bot._alerts_webhook is None
     assert "404" in bot._alerts_startup_problem
+
+
+def test_status_names_an_initial_stop():
+    from types import SimpleNamespace
+
+    from options_scanner.discord_bot import _stop_reason_text
+
+    assert _stop_reason_text(SimpleNamespace(stop_price=None, entry_fill=1.0, stop_reason=None)) == "unprotected"
+    assert _stop_reason_text(SimpleNamespace(stop_price=0.65, entry_fill=1.0, stop_reason="trail")) == "initial"
+    assert _stop_reason_text(SimpleNamespace(stop_price=1.0, entry_fill=1.0, stop_reason="breakeven")) == "breakeven"
+    assert _stop_reason_text(SimpleNamespace(stop_price=1.5, entry_fill=1.0, stop_reason="trail")) == "trail"

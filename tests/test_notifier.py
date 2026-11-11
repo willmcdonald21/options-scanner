@@ -475,3 +475,14 @@ def test_a_locked_stop_out_says_the_rest_are_still_held():
     )
     assert note.title.startswith("SOLD 2 LOCKED")
     assert "3 still held" in note.description
+
+
+def test_the_initial_stop_card_says_it_is_the_initial_stop():
+    note = stop_moved(
+        option=OPT, old=None, new=0.65, reason="trail", remaining=6,
+        level_pct=0, locks_pct=-35, today=TODAY,
+    )
+    assert "Initial stop $0.65 (-35%)" in note.description
+    assert "The 6 sell there if the price falls back" in note.description
+    assert note.level.name == "INFO"
+    assert dict((n, v) for n, v, _ in note.fields)["Why"] == "`initial`"
