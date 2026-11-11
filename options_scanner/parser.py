@@ -307,6 +307,10 @@ def _parse_average_down(card: ParsedCard, title: str, today: date) -> ParseResul
 #
 #   ticker   strike+right   price per share
 #
+# The price may be left out (`TSLA 397.5C`): that means buy at market whatever
+# the ask, with no price buffer. Given, it is respected -- the pipeline skips
+# an ask too far above or below it.
+#
 # An optional `MM/DD` or `MM/DD/YY(YY)` before the strike names the expiry;
 # without one the alert means today's (0DTE) contract -- checked against the
 # live chain on 2026-10-15, when QQQ 718P at 1.99 matched only the same-day
@@ -322,14 +326,16 @@ _SIMPLE_ALERT_RE = re.compile(
     r"\$?(?P<ticker>[A-Za-z]{1,6})"
     r"(?:\s+(?P<month>\d{1,2})/(?P<day>\d{1,2})(?:/(?P<year>\d{2}|\d{4}))?)?"
     r"\s+(?P<strike>\d+(?:\.\d+)?)\s*(?P<right>[CcPp])"
-    r"\s+@?\s*\$?(?P<price>\d*\.?\d+)"
+    r"(?:\s+@?\s*\$?(?P<price>\d*\.?\d+))?"
     rf"(?:\s+(?P<post>{_AVG_KEYWORD}))?\s*$",
     re.IGNORECASE,
 )
 
 
 def parse_simple_alert(text: str, *, message_id: int, today: date) -> EntryAlert | RejectedAlert | None:
-    """Parse a one-line `TICKER STRIKE{C|P} PRICE` alert. Never raises.
+    """Parse a one-line `TICKER STRIKE{C|P} [PRICE]` alert. Never raises.
+
+    No price gives `entry_price=None`: buy at market, no price buffer.
 
     Returns None when the text is not shaped like one, so the caller can fall
     back to the card parser. Returns a RejectedAlert when it IS shaped like one
@@ -350,9 +356,10 @@ def parse_simple_alert(text: str, *, message_id: int, today: date) -> EntryAlert
         return RejectedAlert(message_id, reason, detail, raw_title)
 
     strike = float(match["strike"])
-    price = float(match["price"])
-    if strike <= 0 or price <= 0:
-        return reject(RejectReason.NON_POSITIVE_PRICE, f"strike {strike:g} and price {price:g} must both be positive")
+    price = float(match["price"]) if match["price"] is not None else None
+    if strike <= 0 or (price is not None and price <= 0):
+        shown = "none" if price is None else f"{price:g}"
+        return reject(RejectReason.NON_POSITIVE_PRICE, f"strike {strike:g} and price {shown} must both be positive")
 
     if match["month"]:
         year = today.year

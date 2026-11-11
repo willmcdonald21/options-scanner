@@ -591,6 +591,46 @@ def test_an_impossible_date_is_rejected():
     assert result.reason is RejectReason.UNPARSABLE_CONTRACT
 
 
+@pytest.mark.parametrize(
+    "text,expiry,strike,right",
+    [
+        ("TSLA 397.5C", OCT_15, 397.5, "C"),
+        ("tsla 397.5c", OCT_15, 397.5, "C"),
+        ("$TSLA 397.5 C", OCT_15, 397.5, "C"),
+        ("QQQ 718P", OCT_15, 718.0, "P"),
+        ("TSLA 10/16 397.5C", date(2026, 10, 16), 397.5, "C"),
+    ],
+)
+def test_a_one_line_alert_may_leave_out_the_price(text, expiry, strike, right):
+    """No price: buy at market whatever the ask. The pipeline reads None as
+    "no price buffer"."""
+    alert = _simple(text)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.option == OptionKey(alert.option.ticker, expiry, strike, right)
+    assert alert.entry_price is None
+    assert alert.is_zero_dte == (expiry == OCT_15)
+    assert alert.source == "simple"
+    assert not alert.average_down
+
+
+def test_a_no_price_alert_still_rejects_a_past_date():
+    result = _simple("QQQ 10/14 718P")
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.EXPIRY_IN_PAST
+
+
+@pytest.mark.parametrize("text", ["avg TSLA 397.5C", "TSLA 397.5C avg", "average down TSLA 397.5C"])
+def test_a_no_price_average_down(text):
+    alert = _simple(text)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.average_down
+    assert alert.entry_price is None
+    assert alert.option.strike == 397.5
+
+
 def test_a_zero_price_is_rejected():
     result = _simple("QQQ 718P 0")
 
@@ -602,12 +642,15 @@ def test_a_zero_price_is_rejected():
     "text",
     [
         "QQQ 718P 1.99 lotto",       # anything extra: not this format
-        "QQQ 718P",                  # no price
+        "QQQ 718P lotto",
         "718P 1.99",                 # no ticker
+        "718P",
         "QQQ 718X 1.99",             # not a call or a put
         "QQQ 718P\n1.99",            # split across lines
         "BUY — QQQ 730C · 0DTE",     # a card's title
         "anyone filled on QQQ?",
+        "TSLA 400 calls",            # words, not the format
+        "QQQ 718P 10/16",            # a date goes before the strike
         "",
     ],
 )
@@ -742,7 +785,7 @@ def test_an_average_down_can_name_a_date():
     assert alert.option.expiry == date(2026, 10, 16)
 
 
-@pytest.mark.parametrize("text", ["avg QQQ 718P", "avg", "QQQ 718P 1.50 avg lotto", "avg avg QQQ 718P 1.50"])
+@pytest.mark.parametrize("text", ["avg", "avg QQQ", "QQQ 718P 1.50 avg lotto", "avg avg QQQ 718P 1.50"])
 def test_a_malformed_average_down_is_not_guessed_at(text):
     assert _simple(text) is None
 
