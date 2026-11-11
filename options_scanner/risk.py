@@ -139,7 +139,7 @@ class RiskGate:
     def check_entry(
         self,
         occ_symbol: str,
-        entry_price: float,
+        entry_price: float | None,
         *,
         moment: datetime | None = None,
         trading_day: date | None = None,
@@ -215,9 +215,10 @@ class RiskGate:
             occ_symbol, entry_price, settings.entry.duplicate_window_seconds
         )
         if duplicate is not None:
+            what = "with no price" if entry_price is None else f"at ${entry_price:.3f}"
             return Decision.block(
                 BlockReason.DUPLICATE_ALERT,
-                f"same contract at ${entry_price:.3f} was already accepted as message {duplicate} "
+                f"same contract {what} was already accepted as message {duplicate} "
                 f"within the last {settings.entry.duplicate_window_seconds:.0f}s",
             )
 

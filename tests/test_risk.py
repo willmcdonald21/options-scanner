@@ -20,7 +20,7 @@ def gate(storage, **overrides) -> RiskGate:
     return RiskGate(make_settings(**overrides), storage)
 
 
-def check(g: RiskGate, *, symbol: str = SPX_OCC, entry: float = ENTRY, moment=MID_SESSION):
+def check(g: RiskGate, *, symbol: str = SPX_OCC, entry: float | None = ENTRY, moment=MID_SESSION):
     return g.check_entry(symbol, entry, moment=moment, trading_day=TRADING_DAY)
 
 
@@ -267,6 +267,46 @@ def test_a_recent_identical_alert_is_blocked_as_a_duplicate(storage):
 
 
 # --- reporting ------------------------------------------------------------
+
+
+def _accept_no_price_alert(storage, message_id: int) -> None:
+    from options_scanner.models import EntryAlert
+
+    storage.record_alert(
+        message_id=message_id,
+        channel_id=1001,
+        author_id=3003,
+        raw_text="SPX 7815P",
+        status=STATUS_ACCEPTED,
+        alert=EntryAlert(
+            message_id=message_id,
+            option=OptionKey("SPX", date(2026, 10, 6), 7815.0, "P"),
+            entry_price=None,
+            advisor_contracts=0,
+            advisor_cost=0.0,
+            trim_targets=(),
+            raw_title="SPX 7815P",
+            is_zero_dte=True,
+            source="simple",
+        ),
+    )
+
+
+def test_a_repeated_no_price_alert_is_blocked_as_a_duplicate(storage):
+    g = gate(storage)
+    _accept_no_price_alert(storage, 911)
+
+    decision = check(g, entry=None)
+    assert decision.reason is BlockReason.DUPLICATE_ALERT
+    assert "with no price" in decision.detail
+    assert "911" in decision.detail
+
+
+def test_a_priced_alert_after_a_no_price_one_is_not_a_duplicate(storage):
+    """Adding a price is the way back in within the window."""
+    g = gate(storage)
+    _accept_no_price_alert(storage, 912)
+    assert check(g, entry=ENTRY).allowed
 
 
 def test_the_day_summary_reports_every_counter(storage):

@@ -77,7 +77,7 @@ class Storage:
     def find_recent_duplicate(
         self,
         occ_symbol: str,
-        entry_price: float,
+        entry_price: float | None,
         within_seconds: float,
         now: datetime | None = None,
     ) -> int | None:
@@ -85,18 +85,27 @@ class Storage:
         accepted under a *different* message id. That is what an accidental
         re-paste looks like, since re-pasting creates a new message.
 
+        `entry_price` None is a one-line alert that named no price. Its
+        re-paste is the same contract, also without a price: comparing a
+        missing price with `abs(NULL - ?)` would never match, and a
+        double-sent `TSLA 397.5C` would buy twice.
+
         Returns the earlier message id, or None.
         """
         now = now or datetime.utcnow()
         cutoff = (now - timedelta(seconds=within_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        if entry_price is None:
+            price_clause, params = "entry_price IS NULL", (occ_symbol,)
+        else:
+            price_clause, params = "abs(entry_price - ?) < 1e-9", (occ_symbol, entry_price)
         row = self._conn.execute(
-            """SELECT message_id FROM alerts
+            f"""SELECT message_id FROM alerts
                WHERE occ_symbol = ?
-                 AND abs(entry_price - ?) < 1e-9
+                 AND {price_clause}
                  AND status = ?
                  AND received_at >= ?
                ORDER BY received_at DESC LIMIT 1""",
-            (occ_symbol, entry_price, STATUS_ACCEPTED, cutoff),
+            (*params, STATUS_ACCEPTED, cutoff),
         ).fetchone()
         return int(row["message_id"]) if row else None
 

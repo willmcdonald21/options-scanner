@@ -16,11 +16,11 @@ from options_scanner.storage import (
 OPTION = OptionKey("SPX", date(2026, 10, 6), 7815.0, "P")
 
 
-def _alert(message_id: int = 1) -> EntryAlert:
+def _alert(message_id: int = 1, entry_price: float | None = 0.475) -> EntryAlert:
     return EntryAlert(
         message_id=message_id,
         option=OPTION,
-        entry_price=0.475,
+        entry_price=entry_price,
         advisor_contracts=25,
         advisor_cost=1188.0,
         trim_targets=(TrimTarget(0.25, 0.594),),
@@ -37,14 +37,19 @@ def _state(**overrides) -> PositionState:
     return PositionState(**base)
 
 
-def _seed_alert(storage: Storage, message_id: int = 1, status: str = STATUS_ACCEPTED) -> None:
+def _seed_alert(
+    storage: Storage,
+    message_id: int = 1,
+    status: str = STATUS_ACCEPTED,
+    entry_price: float | None = 0.475,
+) -> None:
     storage.record_alert(
         message_id=message_id,
         channel_id=1001,
         author_id=3003,
         raw_text="raw",
         status=status,
-        alert=_alert(message_id),
+        alert=_alert(message_id, entry_price),
     )
 
 
@@ -105,6 +110,36 @@ def test_only_accepted_alerts_count_as_duplicates(storage):
     """A rejected alert must not block a corrected re-paste of the same trade."""
     _seed_alert(storage, 100, status=STATUS_REJECTED)
     assert storage.find_recent_duplicate(SPX_OCC, 0.475, 900) is None
+
+
+def test_a_no_price_alert_is_stored_without_a_price(storage):
+    _seed_alert(storage, 100, entry_price=None)
+    assert storage.get_alert(100)["entry_price"] is None
+
+
+def test_a_no_price_repaste_of_the_same_contract_is_a_duplicate(storage):
+    """`TSLA 397.5C` sent twice must not buy twice: NULL never equals NULL in
+    the price comparison, so a missing price is matched as missing."""
+    _seed_alert(storage, 100, entry_price=None)
+    assert storage.find_recent_duplicate(SPX_OCC, None, 900) == 100
+
+
+def test_a_no_price_alert_and_a_priced_one_are_not_duplicates(storage):
+    _seed_alert(storage, 100, entry_price=None)
+    assert storage.find_recent_duplicate(SPX_OCC, 0.475, 900) is None
+    _seed_alert(storage, 200, entry_price=0.475)
+    assert storage.find_recent_duplicate(SPX_OCC, None, 900) == 100
+
+
+def test_a_no_price_duplicate_still_needs_the_same_contract(storage):
+    _seed_alert(storage, 100, entry_price=None)
+    assert storage.find_recent_duplicate("SPXW  261006P07820000", None, 900) is None
+
+
+def test_a_no_price_duplicate_expires(storage):
+    _seed_alert(storage, 100, entry_price=None)
+    later = datetime.utcnow() + timedelta(seconds=3600)
+    assert storage.find_recent_duplicate(SPX_OCC, None, 900, now=later) is None
 
 
 # --- positions ------------------------------------------------------------
