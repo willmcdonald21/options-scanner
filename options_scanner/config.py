@@ -485,7 +485,8 @@ class Settings(BaseModel):
         steps = ""
         if self.stops.steps:
             moves = "/".join(
-                f"+{level}%->{'BE' if locks == 0 else f'{locks:+g}%'}" for level, locks in self.stops.steps
+                f"{'entry' if level == 0 else f'+{level}%'}->{'BE' if locks == 0 else f'{locks:+g}%'}"
+                for level, locks in self.stops.steps
             )
             steps = f"stops={moves} "
         lock = self.stops.runner_lock

@@ -75,12 +75,13 @@ stops:
   exit_through_pct: 2.0     # exits price this % through the bid so they fill
   exit_retries: 3           # then escalate: an exit that won't fill must not stay quiet
 
-  # Step stops: [price reached %, stop moves to this % gain]. Breakeven once
-  # +25% is reached, then the stop trails two levels behind the price. On a
-  # $1.00 fill: +25% -> $1.00, +50% holds, +75% -> $1.25, +100% -> $1.50,
-  # and the runners keep $1.50. Driven by the price, so a position too small
-  # to trim still gets each stop. No stop before +25%.
+  # Step stops: [price reached %, stop moves to this % gain]. From entry the
+  # stop is -35%; break-even once +25% is reached, then it trails two levels
+  # behind the price. On a $1.00 fill: entry -> $0.65, +25% -> $1.00, +50%
+  # holds, +75% -> $1.25, +100% -> $1.50, and the runners keep $1.50. Driven
+  # by the price, so a position too small to trim still gets each stop.
   steps:
+    - [0, -35]      # the initial stop, set on the first quote after the fill
     - [25, 0]
     - [75, 25]
     - [100, 50]

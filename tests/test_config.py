@@ -276,6 +276,11 @@ def test_the_runner_lock_carries_through_to_the_rules_engine():
         make_settings(stops={"runner_lock": {"lag_pct": 0}})
 
 
+def test_the_summary_calls_a_level_0_step_the_entry():
+    line = make_settings(stops={"steps": [(0, -35), (25, 0)]}).summary_line()
+    assert "stops=entry->-35%/+25%->BE" in line
+
+
 def test_by_default_there_are_no_steps_and_the_trail_is_on():
     rules = make_settings().rules()
     assert rules.stop_steps == ()
