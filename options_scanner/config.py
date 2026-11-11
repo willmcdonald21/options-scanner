@@ -67,6 +67,11 @@ class DiscordSettings(BaseModel):
     # shows the open positions. Blank = no positions board.
     positions_webhook_url: str = ""
 
+    # Optional. A webhook into the ALERTS channel, used only to answer the
+    # close commands typed there ("Closing NVDA 220C", "2 NVDA open -- say
+    # which"). Blank = those answers go to the updates channel instead.
+    alerts_webhook_url: str = ""
+
     @property
     def posts_via_webhook(self) -> bool:
         return bool(self.updates_webhook_url.strip())
@@ -78,6 +83,10 @@ class DiscordSettings(BaseModel):
     @property
     def posts_board(self) -> bool:
         return bool(self.positions_webhook_url.strip())
+
+    @property
+    def answers_in_alerts(self) -> bool:
+        return bool(self.alerts_webhook_url.strip())
 
     @model_validator(mode="after")
     def _channels_must_differ(self) -> "DiscordSettings":
@@ -438,6 +447,10 @@ class Settings(BaseModel):
             from options_scanner.webhook import redact
 
             data["discord"]["positions_webhook_url"] = redact(self.discord.positions_webhook_url)
+        if data["discord"].get("alerts_webhook_url"):
+            from options_scanner.webhook import redact
+
+            data["discord"]["alerts_webhook_url"] = redact(self.discord.alerts_webhook_url)
         return data
 
     def _sizing_summary(self) -> str:
@@ -505,6 +518,7 @@ def _discord_from_env() -> dict[str, Any]:
         "updates_webhook_url": os.environ.get("UPDATES_WEBHOOK_URL", ""),
         "pnl_webhook_url": os.environ.get("PNL_WEBHOOK_URL", ""),
         "positions_webhook_url": os.environ.get("POSITIONS_WEBHOOK_URL", ""),
+        "alerts_webhook_url": os.environ.get("ALERTS_WEBHOOK_URL", ""),
     }
 
 

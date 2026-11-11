@@ -454,6 +454,38 @@ def test_the_positions_webhook_token_never_reaches_a_log(monkeypatch):
     assert "987654321" in dumped["discord"]["positions_webhook_url"]
 
 
+# --- answers to close commands in the alerts channel ------------------------
+
+ALERTS_HOOK = "https://discord.com/api/webhooks/555555555/alerts-secret-token"
+
+
+def test_the_alerts_webhook_is_read_from_the_environment(monkeypatch):
+    env(monkeypatch)
+    monkeypatch.setenv("ALERTS_WEBHOOK_URL", ALERTS_HOOK)
+
+    settings = load_settings(load_env=False)
+
+    assert settings.discord.answers_in_alerts
+    assert settings.discord.alerts_webhook_url == ALERTS_HOOK
+
+
+def test_without_it_close_answers_go_to_updates(monkeypatch):
+    env(monkeypatch)
+    monkeypatch.delenv("ALERTS_WEBHOOK_URL", raising=False)
+
+    assert not load_settings(load_env=False).discord.answers_in_alerts
+
+
+def test_the_alerts_webhook_token_never_reaches_a_log(monkeypatch):
+    env(monkeypatch)
+    monkeypatch.setenv("ALERTS_WEBHOOK_URL", ALERTS_HOOK)
+
+    dumped = load_settings(load_env=False).redacted()
+
+    assert "alerts-secret-token" not in str(dumped)
+    assert "555555555" in dumped["discord"]["alerts_webhook_url"]
+
+
 def test_the_committed_config_refreshes_the_board_every_2_seconds(monkeypatch):
     env(monkeypatch)
     board = load_settings(load_env=False).board
