@@ -18,6 +18,7 @@ permission on one of them looks identical to a bot with nothing to do.
 from __future__ import annotations
 
 import asyncio
+import re
 import logging
 import signal
 from dataclasses import replace
@@ -77,6 +78,41 @@ def match_positions(args: list[str], options: dict[str, OptionKey]) -> list[str]
             if f"{options[symbol].strike:g}{options[symbol].right}" == wanted
         ]
     return matches
+
+
+# A close typed in the alerts channel. Advisor posts carry lines like "Close or
+# trim & set SL to breakeven.", so only a WHOLE message of one of these shapes
+# is a command; anything else goes to the alert parser untouched.
+#   close !                    everything
+#   close NVDA                 that ticker
+#   close QQQ 718P             that strike and right
+#   close NVDA 261021C00220000 the full OCC symbol
+# "close all" is deliberately not one: ALL (Allstate) is a real ticker.
+_CLOSE_WORD = re.compile(r"^!?close$", re.IGNORECASE)
+_TICKER = re.compile(r"^\$?[A-Za-z]{1,6}$")
+_STRIKE = re.compile(r"^\d+(\.\d+)?[CPcp]$")
+_OCC_TAIL = re.compile(r"^\d{6}[CPcp]\d{8}$")
+
+
+def parse_close_command(text: str) -> list[str] | None:
+    """The `match_positions` arguments a close command names, ["!"] for
+    everything, or None when the message is not a close command."""
+    stripped = text.strip()
+    if "\n" in stripped:
+        return None
+    parts = stripped.split()
+    if len(parts) < 2 or len(parts) > 3 or not _CLOSE_WORD.match(parts[0]):
+        return None
+    args = parts[1:]
+    if args == ["!"]:
+        return ["!"]
+    if not _TICKER.match(args[0]):
+        return None
+    if len(args) == 2 and not (_STRIKE.match(args[1]) or _OCC_TAIL.match(args[1])):
+        return None
+    return args
+
+
 FLATTEN_CONFIRM_SECONDS = 60
 
 

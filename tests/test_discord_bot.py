@@ -1,10 +1,11 @@
 """The Discord bot's wiring of the P&L channel. No Discord connection: the bot
 is constructed but never started, and webhooks are replaced by fakes."""
 
+import pytest
 from conftest import make_settings
 
 from options_scanner.broker.paper import PaperBroker
-from options_scanner.discord_bot import SwiftAlertBot
+from options_scanner.discord_bot import SwiftAlertBot, parse_close_command
 from options_scanner.notifier import Notification
 from options_scanner.pipeline import AlertPipeline
 from options_scanner.position_manager import PositionManager
@@ -317,3 +318,46 @@ async def test_close_with_no_argument_explains_itself(storage):
 
     assert bot.manager.closed == []
     assert "!close NVDA" in posted[-1].title
+
+
+# --- close commands typed in the alerts channel -----------------------------
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("close !", ["!"]),
+        ("CLOSE !", ["!"]),
+        ("!close !", ["!"]),
+        ("  close !  ", ["!"]),
+        ("close NVDA", ["NVDA"]),
+        ("close nvda", ["nvda"]),
+        ("close $TSLA", ["$TSLA"]),
+        ("Close SPY", ["SPY"]),
+        ("close QQQ 718P", ["QQQ", "718P"]),
+        ("close QQQ 718.5p", ["QQQ", "718.5p"]),
+        ("close NVDA 261021C00220000", ["NVDA", "261021C00220000"]),
+        ("close all", ["all"]),  # the ticker ALL; the handler points at `close !`
+    ],
+)
+def test_close_commands_are_recognised(text, expected):
+    assert parse_close_command(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Close or trim & set SL to breakeven.",  # an advisor line
+        "close",
+        "close NVDA now",
+        "close NVDA 220",                      # no call/put
+        "close !!",
+        "close NVDA\nTrim Targets: 1.20",       # multi-line is a paste
+        "SPX 7815P 0.475",
+        "closing NVDA",
+        "close 123",
+        "",
+    ],
+)
+def test_anything_else_is_left_for_the_alert_parser(text):
+    assert parse_close_command(text) is None
