@@ -366,6 +366,29 @@ anyone else, and ignores everything in the alerts channel that is not from you.
 The halt flag is persisted, so a bot that restarts after being halted stays
 halted rather than quietly resuming on its own.
 
+### Closing from the alerts channel
+
+Typed in the **alerts channel** (where you paste the alerts), by you only, as
+the whole message. No `!` needed; case does not matter.
+
+| You type | Effect | Answer |
+|---|---|---|
+| `close !` | **Emergency switch:** closes everything now, one step, no confirmation. New alerts are still taken — `!halt` to stop those too | "Closing everything: NVDA 220C, SPY 772C" |
+| `close NVDA` | Closes that position now; everything else is left alone | "Closing NVDA 220C" |
+| `close NVDA` with two NVDA open | Closes **nothing** and asks which | "2 NVDA positions are open — say which: `close NVDA 220C` or `close NVDA 225C`" |
+| `close NVDA 225C` | Closes just that contract | "Closing NVDA 225C" |
+| `close TSLA` with none open | Closes nothing | "No open TSLA position", with what is open |
+
+The message gets 👀, then ✅ closed, ❓ say which, or ❌ nothing matched. A close
+that does not complete answers "Still open: …" and pings you. The SOLD and P&L
+cards go to their usual channels; the short answer goes back to the alerts
+channel through `ALERTS_WEBHOOK_URL`, or to updates when that is blank.
+
+Only a one-line message of exactly that shape is a command, so an advisor line
+like "Close or trim & set SL to breakeven." is still read as an alert.
+`close all` is the ticker ALL, not everything — with no ALL position it closes
+nothing and says to type `close !`.
+
 ---
 
 ## Notifications
