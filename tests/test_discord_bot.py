@@ -6,7 +6,13 @@ from conftest import make_settings
 
 from options_scanner.broker.paper import PaperBroker
 from options_scanner.discord_bot import SwiftAlertBot, parse_close_command
-from options_scanner.notifier import Notification
+from options_scanner.notifier import (
+    REACTION_PLACED,
+    REACTION_QUESTION,
+    REACTION_RECEIVED,
+    REACTION_REJECTED,
+    Notification,
+)
 from options_scanner.pipeline import AlertPipeline
 from options_scanner.position_manager import PositionManager
 from options_scanner.risk import RiskGate
@@ -42,13 +48,13 @@ class FakeWebhook:
         self.closed = True
 
 
-def _bot(storage, *, pnl=PNL_HOOK, updates=UPDATES_HOOK, board=""):
+def _bot(storage, *, pnl=PNL_HOOK, updates=UPDATES_HOOK, board="", alerts=""):
     settings = make_settings(
         mode="paper",
         discord={
             "bot_token": "t", "alerts_channel_id": 1001, "updates_channel_id": 2002,
             "owner_user_id": 3003, "pnl_webhook_url": pnl, "updates_webhook_url": updates,
-            "positions_webhook_url": board,
+            "positions_webhook_url": board, "alerts_webhook_url": alerts,
         },
     )
     risk = RiskGate(settings, storage)
@@ -259,7 +265,17 @@ class FakeManager:
 
     async def close_position(self, symbol, *, action):
         self.closed.append((symbol, action))
+        if symbol not in self.stuck:
+            self.managed.pop(symbol, None)
         return [Notification(title=f"SOLD ALL — {symbol}")]
+
+    async def flatten_all(self):
+        notes = []
+        for symbol in list(self.managed):
+            notes.extend(await self.close_position(symbol, action="FLATTENED"))
+        return notes
+
+    stuck: tuple = ()
 
 
 def _bot_with_fake(storage):
@@ -361,3 +377,178 @@ def test_close_commands_are_recognised(text, expected):
 )
 def test_anything_else_is_left_for_the_alert_parser(text):
     assert parse_close_command(text) is None
+
+
+class FakeMessage:
+    def __init__(self, content, *, channel_id=1001, author_id=3003):
+        from types import SimpleNamespace
+
+        self.content = content
+        self.channel = SimpleNamespace(id=channel_id)
+        self.author = SimpleNamespace(id=author_id)
+        self.id = 42
+        self.jump_url = "https://discord.com/channels/1/1001/42"
+        self.reactions: list[str] = []
+
+    async def add_reaction(self, emoji):
+        self.reactions.append(emoji)
+
+
+def _alerts_bot(storage):
+    """A bot whose close answers land in a fake alerts webhook, sale cards in
+    `posted`, and pasted alerts in `pasted`."""
+    bot, posted = _bot_with_fake(storage)
+    bot._alerts_webhook = FakeWebhook(channel_id="1001")
+    pasted = []
+
+    async def handle_alert(message):
+        pasted.append(message.content)
+
+    bot._handle_alert = handle_alert
+    return bot, posted, bot._alerts_webhook.posted, pasted
+
+
+async def test_close_ticker_in_the_alerts_channel_closes_it_and_answers_there(storage):
+    bot, posted, answers, pasted = _alerts_bot(storage)
+    message = FakeMessage("close NVDA")
+
+    await bot.on_message(message)
+
+    assert bot.manager.closed == [("NVDA  261021C00220000", "CLOSED")]
+    assert answers[0].title == "Closing NVDA 220C"
+    assert any("SOLD ALL" in n.title for n in posted)  # the sale card goes to updates
+    assert message.reactions == [REACTION_RECEIVED, REACTION_PLACED]
+    assert pasted == []
+
+
+async def test_two_of_a_ticker_closes_nothing_and_asks_which(storage):
+    bot, _, answers, _ = _alerts_bot(storage)
+    message = FakeMessage("close QQQ")
+
+    await bot.on_message(message)
+
+    assert bot.manager.closed == []
+    assert answers[-1].title == "2 QQQ positions are open"
+    assert "`close QQQ 718P`" in answers[-1].description
+    assert "`close QQQ 720C`" in answers[-1].description
+    assert message.reactions[-1] == REACTION_QUESTION
+
+
+async def test_naming_the_strike_closes_just_that_one(storage):
+    bot, _, _, _ = _alerts_bot(storage)
+
+    await bot.on_message(FakeMessage("close QQQ 718P"))
+
+    assert bot.manager.closed == [("QQQ   261021P00718000", "CLOSED")]
+
+
+async def test_a_ticker_not_held_closes_nothing(storage):
+    bot, _, answers, _ = _alerts_bot(storage)
+    message = FakeMessage("close TSLA")
+
+    await bot.on_message(message)
+
+    assert bot.manager.closed == []
+    assert answers[-1].title == "No open TSLA position"
+    assert message.reactions[-1] == REACTION_REJECTED
+
+
+async def test_close_all_points_at_close_bang(storage):
+    bot, _, answers, _ = _alerts_bot(storage)
+
+    await bot.on_message(FakeMessage("close all"))
+
+    assert bot.manager.closed == []
+    assert "type `close !`" in answers[-1].description
+
+
+async def test_close_bang_closes_everything_and_keeps_trading(storage):
+    bot, posted, answers, _ = _alerts_bot(storage)
+    held = set(bot.manager.managed)
+    message = FakeMessage("close !")
+
+    await bot.on_message(message)
+
+    assert {symbol for symbol, _ in bot.manager.closed} == held
+    assert bot.manager.managed == {}
+    assert answers[0].title.startswith("Closing everything:")
+    assert not bot.risk.halted
+    assert message.reactions[-1] == REACTION_PLACED
+
+
+async def test_close_bang_with_nothing_open_says_so(storage):
+    bot, _, answers, _ = _alerts_bot(storage)
+    bot.manager.managed.clear()
+
+    await bot.on_message(FakeMessage("close !"))
+
+    assert answers[-1].title == "Nothing open"
+
+
+async def test_a_close_that_does_not_complete_is_flagged(storage):
+    bot, _, answers, _ = _alerts_bot(storage)
+    bot.manager.stuck = ("NVDA  261021C00220000",)
+    message = FakeMessage("close NVDA")
+
+    await bot.on_message(message)
+
+    assert answers[-1].title == "Still open: NVDA 220C"
+    assert answers[-1].mentions_owner
+    assert message.reactions[-1] == REACTION_REJECTED
+
+
+async def test_anything_else_in_the_alerts_channel_is_still_an_alert(storage):
+    bot, _, answers, pasted = _alerts_bot(storage)
+
+    await bot.on_message(FakeMessage("Close or trim & set SL to breakeven."))
+
+    assert pasted == ["Close or trim & set SL to breakeven."]
+    assert bot.manager.closed == []
+    assert answers == []
+
+
+async def test_a_close_from_anyone_else_is_ignored(storage):
+    bot, _, answers, pasted = _alerts_bot(storage)
+
+    await bot.on_message(FakeMessage("close !", author_id=9999))
+
+    assert bot.manager.closed == []
+    assert answers == [] and pasted == []
+
+
+async def test_without_an_alerts_webhook_the_answers_go_to_updates(storage):
+    bot, posted = _bot_with_fake(storage)
+
+    await bot.on_message(FakeMessage("close TSLA"))
+
+    assert posted[-1].title == "No open TSLA position"
+
+
+async def _check_alerts(storage, hook):
+    bot, _ = _bot(storage, alerts="https://discord.com/api/webhooks/5/x")
+    await bot._alerts_webhook.close()
+    bot._alerts_webhook = hook
+    await bot._check_alerts_webhook()
+    return bot
+
+
+async def test_an_alerts_webhook_on_the_alerts_channel_stays_on(storage):
+    bot = await _check_alerts(storage, FakeWebhook(channel_id="1001"))
+
+    assert bot._alerts_webhook is not None
+    assert bot._alerts_startup_problem is None
+
+
+async def test_an_alerts_webhook_on_another_channel_is_turned_off(storage):
+    hook = FakeWebhook(channel_id="2002")
+    bot = await _check_alerts(storage, hook)
+
+    assert bot._alerts_webhook is None and hook.closed
+    assert "not the alerts channel" in bot._alerts_startup_problem
+
+
+async def test_a_broken_alerts_webhook_is_turned_off(storage):
+    bot = await _check_alerts(storage, FakeWebhook(valid=False))
+
+    assert bot._alerts_webhook is None
+    assert "404" in bot._alerts_startup_problem

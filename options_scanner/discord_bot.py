@@ -30,7 +30,10 @@ from options_scanner.config import Mode, Settings
 from options_scanner.market_hours import describe as describe_session
 from options_scanner.models import OptionKey
 from options_scanner.notifier import (
+    REACTION_PLACED,
+    REACTION_QUESTION,
     REACTION_RECEIVED,
+    REACTION_REJECTED,
     Level,
     Notification,
     end_of_day,
@@ -152,6 +155,7 @@ class SwiftAlertBot(discord.Client):
         self._ready_once = False
         self._pnl_startup_problem: str | None = None
         self._board_startup_problem: str | None = None
+        self._alerts_startup_problem: str | None = None
         self._board_task: asyncio.Task | None = None
 
         # Posting transport. A webhook needs no channel permissions, so the
@@ -186,6 +190,17 @@ class SwiftAlertBot(discord.Client):
                 risk=risk,
                 manager=manager,
                 broker=pipeline.broker,
+            )
+
+        # Answers to close commands typed in the alerts channel. Optional,
+        # and a webhook rather than the bot's own account, so nothing else the
+        # bot does can post there. Only an error answer (a close that did not
+        # complete) pings.
+        self._alerts_webhook: WebhookNotifier | None = None
+        if settings.discord.answers_in_alerts:
+            self._alerts_webhook = WebhookNotifier(
+                settings.discord.alerts_webhook_url,
+                owner_user_id=settings.discord.owner_user_id,
             )
 
     # --- startup -----------------------------------------------------------
@@ -239,6 +254,18 @@ class SwiftAlertBot(discord.Client):
                     description=(
                         f"{self._pnl_startup_problem}\nTrading is unaffected; sales are still "
                         "reported here. Fix PNL_WEBHOOK_URL in .env and restart to turn it back on."
+                    ),
+                )
+            )
+        if self._alerts_startup_problem:
+            await self.post(
+                Notification(
+                    title="Close-command answers are coming here",
+                    level=Level.WARNING,
+                    description=(
+                        f"{self._alerts_startup_problem}\n`close NVDA` and `close !` in the "
+                        "alerts channel still work; their answers are posted here instead. Fix "
+                        "ALERTS_WEBHOOK_URL in .env and restart to answer in the alerts channel."
                     ),
                 )
             )
@@ -304,6 +331,8 @@ class SwiftAlertBot(discord.Client):
             await self._webhook.close()
         if self._pnl_webhook is not None:
             await self._pnl_webhook.close()
+        if self._alerts_webhook is not None:
+            await self._alerts_webhook.close()
         await super().close()
 
     async def _verify_channels(self) -> None:
@@ -365,6 +394,36 @@ class SwiftAlertBot(discord.Client):
 
         await self._check_pnl_webhook()
         await self._check_board_webhook()
+        await self._check_alerts_webhook()
+
+    async def _check_alerts_webhook(self) -> None:
+        """Prove the alerts webhook works and points at the alerts channel, or
+        send close-command answers to updates instead. Not fatal: the commands
+        work either way."""
+        if self._alerts_webhook is None:
+            return
+        problem = None
+        try:
+            info = await self._alerts_webhook.validate()
+        except WebhookError as exc:
+            problem = str(exc)
+        else:
+            target = int(info.get("channel_id") or 0)
+            if target != self.settings.discord.alerts_channel_id:
+                problem = (
+                    f"ALERTS_WEBHOOK_URL posts to channel {target}, not the alerts channel "
+                    f"{self.settings.discord.alerts_channel_id}."
+                )
+        if problem is None:
+            logger.info(
+                "close-command answers via webhook %s (alerts channel)",
+                redact(self.settings.discord.alerts_webhook_url),
+            )
+            return
+        logger.error("close-command answers go to updates: %s", problem)
+        await self._alerts_webhook.close()
+        self._alerts_webhook = None
+        self._alerts_startup_problem = problem
 
     async def _check_board_webhook(self) -> None:
         """Prove the positions-board webhook works, or switch the board off.
@@ -469,6 +528,17 @@ class SwiftAlertBot(discord.Client):
             # log is the fallback record.
             logger.error("could not post notification %r: %s", note.title, exc)
 
+    async def post_in_alerts(self, note: Notification) -> None:
+        """Answer a close command where it was typed, in the alerts channel,
+        through its webhook. Without one, the answer goes to updates."""
+        if self._alerts_webhook is None:
+            await self.post(note)
+            return
+        logger.info("notify (alerts): %s", note.to_text())
+        if self.pipeline.dry_run and not note.title.startswith("[DRY RUN]"):
+            note = replace(note, title=f"[DRY RUN] {note.title}")
+        await self._alerts_webhook.post(note)
+
     # --- message routing ---------------------------------------------------
 
     async def on_message(self, message: discord.Message) -> None:
@@ -478,6 +548,10 @@ class SwiftAlertBot(discord.Client):
         if message.channel.id == self.settings.discord.alerts_channel_id:
             if message.author.id != self.settings.discord.owner_user_id:
                 logger.debug("ignoring alerts-channel message from %s", message.author.id)
+                return
+            close_args = parse_close_command(message.content)
+            if close_args is not None:
+                await self._close_from_alerts(message, close_args)
                 return
             await self._handle_alert(message)
             return
@@ -504,6 +578,105 @@ class SwiftAlertBot(discord.Client):
         for note in result.notifications:
             await self.post(note)
         await self._react(message, result.final_reaction)
+
+    async def _close_from_alerts(self, message: discord.Message, args: list[str]) -> None:
+        """`close !` or `close NVDA`, typed in the alerts channel.
+
+        One step, no confirmation, and no halt: `close !` is the emergency
+        switch, and the next alert can still open a position. A ticker that
+        matches more than one position closes nothing and asks which. The SOLD
+        and P&L cards go where they always go; the short answer goes back to
+        the alerts channel.
+        """
+        await self._react(message, REACTION_RECEIVED)
+        if self.manager is None:
+            await self.post_in_alerts(
+                Notification(title="Nothing to close", level=Level.WARNING,
+                             description="There is no position manager running.")
+            )
+            await self._react(message, REACTION_REJECTED)
+            return
+
+        options = {symbol: m.state.option for symbol, m in self.manager.managed.items()}
+
+        def label(symbol: str) -> str:
+            option = options[symbol]
+            return f"{option.ticker} {option.strike:g}{option.right}"
+
+        held = ", ".join(label(symbol) for symbol in options) or "nothing"
+
+        if args == ["!"]:
+            if not options:
+                await self.post_in_alerts(
+                    Notification(title="Nothing open", level=Level.INFO,
+                                 description="There was nothing to close.")
+                )
+                await self._react(message, REACTION_REJECTED)
+                return
+            await self.post_in_alerts(
+                Notification(
+                    title=f"Closing everything: {held}",
+                    level=Level.WARNING,
+                    description="At marketable limits now. New alerts are still taken.",
+                )
+            )
+            for note in await self.manager.flatten_all():
+                await self.post(note)
+            await self._finish_close(message, [symbol for symbol in options], label)
+            return
+
+        matches = match_positions(args, options)
+        target = " ".join(args).upper().lstrip("$")
+        if not matches:
+            hint = "\nTo close everything, type `close !`." if target == "ALL" else ""
+            await self.post_in_alerts(
+                Notification(
+                    title=f"No open {target} position",
+                    level=Level.WARNING,
+                    description=f"Nothing was closed.{hint}",
+                    fields=[("Open", held, False)],
+                )
+            )
+            await self._react(message, REACTION_REJECTED)
+            return
+        if len(matches) > 1:
+            choices = " or ".join(f"`close {label(m)}`" for m in matches)
+            await self.post_in_alerts(
+                Notification(
+                    title=f"{len(matches)} {target} positions are open",
+                    level=Level.WARNING,
+                    description=f"Nothing was closed. Say which: {choices}",
+                )
+            )
+            await self._react(message, REACTION_QUESTION)
+            return
+
+        (symbol,) = matches
+        await self.post_in_alerts(
+            Notification(title=f"Closing {label(symbol)}", level=Level.INFO,
+                         description="At a marketable limit now. Everything else is left alone.")
+        )
+        for note in await self.manager.close_position(symbol, action="CLOSED"):
+            await self.post(note)
+        await self._finish_close(message, [symbol], label)
+
+    async def _finish_close(self, message: discord.Message, symbols: list[str], label) -> None:
+        """React to how the close went, and say so when something is still open."""
+        still_open = [symbol for symbol in symbols if symbol in self.manager.managed]
+        if not still_open:
+            await self._react(message, REACTION_PLACED)
+            return
+        await self.post_in_alerts(
+            Notification(
+                title=f"Still open: {', '.join(label(s) for s in still_open)}",
+                level=Level.ERROR,
+                description=(
+                    "The close did not complete. See the updates channel, and close it "
+                    "manually if it stays open."
+                ),
+            )
+        )
+        await self._react(message, REACTION_REJECTED)
 
     async def _react(self, message: discord.Message, emoji: str) -> None:
         try:

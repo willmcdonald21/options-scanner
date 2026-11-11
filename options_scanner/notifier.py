@@ -40,6 +40,8 @@ REACTION_RECEIVED = "\N{EYES}"
 REACTION_PLACED = "\N{WHITE HEAVY CHECK MARK}"
 REACTION_REJECTED = "\N{CROSS MARK}"
 REACTION_SKIPPED = "\N{NO ENTRY SIGN}"
+# A close command that named more than one position: nothing was closed.
+REACTION_QUESTION = "\N{BLACK QUESTION MARK ORNAMENT}"
 
 
 class Level(str, Enum):
