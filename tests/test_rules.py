@@ -940,7 +940,8 @@ def test_no_steps_keeps_breakeven_on_fill():
         ((25, 0), (25, 10)),        # duplicate level
         ((25, 25),),                # stop at the level that set it
         ((25, 30),),                # stop above it
-        ((0, -10),),                # level must be positive
+        ((-5, -10),),               # level cannot be negative
+        ((0, 0),),                  # a stop at entry would sell on the first tick
         ((25, -100),),              # not a stop at all
         ((25, 10), (75, 5)),        # loosens
     ],
@@ -1128,3 +1129,56 @@ def test_the_lock_is_off_by_default():
 def test_bad_runner_lock_settings_are_rejected(overrides):
     with pytest.raises(ValueError):
         RulesConfig(**overrides)
+
+
+
+# --- the initial stop ------------------------------------------------------
+
+INITIAL_CFG = RulesConfig(
+    trim_schedule=STEP_CFG.trim_schedule,
+    runner_levels=(),
+    stop_steps=((0, -35),) + STEPS,
+    trail_enabled=False,
+    trim_rounding="nearest",
+)
+
+
+def test_the_initial_stop_is_set_on_the_first_quote():
+    result = walk([1.00], _state(1.00, 6), INITIAL_CFG)
+    assert [(s.level_pct, s.price, s.locks_pct) for s in result.stops] == [(0, 0.65, -35)]
+    assert result.state.is_protected
+
+
+def test_a_position_that_only_falls_still_gets_it_and_stops_out_at_minus_35():
+    result = walk([0.95, 0.80, 0.66, 0.65, 0.64], _state(1.00, 6), INITIAL_CFG)
+    assert result.stop_prices == [0.65]
+    assert [(s.qty, s.stop_price) for s in result.stop_outs] == [(6, 0.65)]
+    assert result.state.closed
+
+
+def test_one_bad_tick_under_the_initial_stop_does_not_sell():
+    result = walk([0.64, 0.70, 0.90], _state(1.00, 6), INITIAL_CFG)
+    assert result.stop_outs == []
+
+
+def test_plus_25_lifts_the_initial_stop_to_breakeven_and_the_ladder_carries_on():
+    result = walk([1.00, 1.25, 1.50, 1.75, 2.00], _state(1.00, 6), INITIAL_CFG)
+    assert result.stop_prices == [0.65, 1.00, 1.25, 1.50]
+
+
+def test_a_gap_up_skips_straight_past_the_initial_stop():
+    result = walk([1.30], _state(1.00, 6), INITIAL_CFG)
+    assert result.stop_prices == [1.00]
+
+
+def test_the_initial_stop_rounds_to_the_cent():
+    result = walk([0.47], _state(0.47, 13), INITIAL_CFG)
+    assert result.stop_prices == [0.31]
+
+
+def test_an_average_down_resets_the_initial_stop_to_the_new_average():
+    state = _state(1.00, 6)
+    walk([1.00, 0.80], state, INITIAL_CFG)
+    average_into(state, 6, 0.80)  # new average 0.90
+    result = walk([0.80], state, INITIAL_CFG)
+    assert result.stop_prices == [round_price(0.90 * 0.65)]

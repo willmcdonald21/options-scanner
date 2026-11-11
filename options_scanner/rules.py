@@ -39,9 +39,9 @@ In evaluation order:
    It is floored at the entry fill, so arming the trail can never install a
    stop that would book a loss.
 4b. **Step stops** (when `stop_steps` is set) replace step 4: once the peak
-   reaches a step's level the stop moves to that step's gain -- e.g. +25% ->
-   breakeven, +75% -> +25%, +100% -> +50%. Price-driven, so a position too
-   small to trim at a level still gets its stop.
+   reaches a step's level the stop moves to that step's gain -- e.g. entry ->
+   -35%, +25% -> breakeven, +75% -> +25%, +100% -> +50%. Price-driven, so a
+   position too small to trim at a level still gets its stop.
 6b. **Runner lock** (when `runner_lock_at_pct` is set): once the peak reaches
    it, a position whose runners outnumber its per-level sell by at least
    `runner_lock_min_over_sells` locks half its runners (rounded down) on their
@@ -132,7 +132,9 @@ class RulesConfig:
     # to trim at a level still gets that level's stop. E.g.
     #   ((25, 0), (75, 25), (100, 50))
     # = breakeven at +25%, then the stop trails two levels behind the price
-    # and holds at +50% above +100%. Empty = the original breakeven-on-fill.
+    # and holds at +50% above +100%. A step at level 0 is the initial stop,
+    # set from entry: (0, -35) stops out at -35% until a later step lifts it.
+    # Empty = the original breakeven-on-fill.
     stop_steps: tuple[tuple[int, float], ...] = ()
 
     # Consecutive quotes at or below the stop required to exit. 0DTE spreads
@@ -221,8 +223,9 @@ class RulesConfig:
             raise ValueError(f"stop_steps has duplicate levels: {step_levels}")
         step_stops = [stop for _, stop in self.stop_steps]
         for level, stop in self.stop_steps:
-            if level <= 0:
-                raise ValueError(f"stop step level must be a positive percent, got {level}")
+            # 0 is the entry: a step there is the initial stop, e.g. (0, -35).
+            if level < 0:
+                raise ValueError(f"stop step level cannot be negative, got {level}")
             # At or above the level, the step would install a stop at or
             # above the bid that triggered it and sell on the next quote.
             if not -100.0 < stop < level:
@@ -612,9 +615,11 @@ def evaluate(state: PositionState, bid: float, config: RulesConfig | None = None
     #     own level (validated), so this cannot install a stop above the bid
     #     that reached it.
     stop = state.stop_price
+    #     A level-0 step (the initial stop) is reached from entry, whatever
+    #     the peak: a position that only ever goes down must still get it.
     reached = [
         (level, locks) for level, locks in config.stop_steps
-        if peak >= level_price(state.entry_fill, level)
+        if level == 0 or peak >= level_price(state.entry_fill, level)
     ]
     if reached:
         level, locks = reached[-1]
