@@ -217,7 +217,7 @@ def alert_parsed(
     *,
     option: OptionKey,
     occ_symbol: str,
-    entry_price: float,
+    entry_price: float | None,
     advisor_contracts: int,
     our_contracts: int,
     cost: float,
@@ -232,6 +232,9 @@ def alert_parsed(
     Carries the same `sizing_note` as the entry card. This is the only card
     dry run produces, so leaving it off here would mean the mode that exists
     to show you the decision never showed you how the size was reached.
+
+    `entry_price` None is a one-line alert that named no price: it is bought
+    at market with no price buffer, and the card says so.
     """
     description = contract_sentence(option)
     if sizing_note:
@@ -243,7 +246,7 @@ def alert_parsed(
         description=description,
         jump_url=jump_url,
     )
-    note.add("Advisor entry", price(entry_price))
+    note.add("Advisor entry", price(entry_price) if entry_price is not None else "none given · at market")
     note.add("Advisor size", contracts(advisor_contracts) if advisor_contracts > 0 else "not given")
     note.add("Our size", f"{contracts(our_contracts)} · {money(cost)}")
     if levels:

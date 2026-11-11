@@ -175,6 +175,24 @@ def test_the_parsed_alert_distinguishes_our_size_from_the_advisors():
     assert values["Trim Targets"].count("\n") == 2
 
 
+
+def test_the_parsed_card_says_a_no_price_alert_buys_at_market():
+    note = alert_parsed(
+        option=OPT,
+        occ_symbol="SPXW  261006P07815000",
+        entry_price=None,
+        advisor_contracts=0,
+        our_contracts=4,
+        cost=190.0,
+        jump_url=JUMP,
+        levels=[(25, 0.59375)],
+        today=TODAY,
+    )
+    values = {name: value for name, value, _ in note.fields}
+
+    assert values["Advisor entry"] == "none given · at market"
+    assert values["Advisor size"] == "not given"
+
 def test_stop_moved_explains_why_in_words():
     breakeven = stop_moved(option=OPT, old=None, new=0.48, reason="breakeven", jump_url=JUMP, today=TODAY)
     trail = stop_moved(option=OPT, old=0.48, new=0.62, reason="trail", jump_url=JUMP, today=TODAY)
