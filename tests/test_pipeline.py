@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+import pytest
 from conftest import SPEC_ALERT, SPX_OCC, TRADING_DAY, FakeBroker, find, make_settings, paste
 
 from options_scanner.broker.base import OrderResult, OrderStatus
 from options_scanner.market_hours import EASTERN
+from options_scanner.models import EntryAlert, OptionKey
 from options_scanner.notifier import (
     REACTION_PLACED,
     REACTION_RECEIVED,
@@ -873,6 +875,159 @@ async def test_a_one_line_alert_chasing_above_the_cap_is_still_skipped(storage):
     pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
 
     result = await paste(pipeline, text=SIMPLE)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+
+
+# --- one-line alerts that name no price -------------------------------------
+#
+# `SPX 7815P` with no price is an order to buy at market whatever the ask:
+# no slippage cap and no below-the-alert check. Every risk limit still applies,
+# and the ask is still needed, because it is the only thing to size from.
+
+NO_PRICE = "SPX 7815P"
+
+
+@pytest.fixture
+def no_price(monkeypatch):
+    """Until the parser reads `SPX 7815P` itself, hand the pipeline the alert
+    it will produce."""
+    import options_scanner.pipeline as pipeline_module
+
+    real = pipeline_module.parse_simple_alert
+
+    def parse(text, *, message_id, today):
+        if text == NO_PRICE:
+            return EntryAlert(
+                message_id=message_id,
+                option=OptionKey("SPX", TRADING_DAY, 7815.0, "P"),
+                entry_price=None,
+                advisor_contracts=0,
+                advisor_cost=0.0,
+                trim_targets=(),
+                raw_title=NO_PRICE,
+                is_zero_dte=True,
+                source="simple",
+            )
+        return real(text, message_id=message_id, today=today)
+
+    monkeypatch.setattr(pipeline_module, "parse_simple_alert", parse)
+
+
+async def test_a_no_price_alert_buys_at_market_however_far_above_the_ask_has_run(storage, no_price):
+    """2.00 is four times the 0.475 a priced alert would have capped at
+    0.52. With no price there is no cap: it buys, sized off the ask."""
+    broker = FakeBroker(bid=1.99, ask=2.00)
+
+    result = await paste(_paper(storage, broker), text=NO_PRICE)
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders == [(SPX_OCC, "BUY", 5, None)]  # $1,000 / $200, at market
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert values["Advisor entry"] == "none given · at market"
+    assert values["Our size"].startswith("5 contracts")
+
+
+async def test_a_no_price_alert_buys_however_far_below_the_ask_is(storage, no_price):
+    """A priced one-line alert is skipped when the ask is over 25% below it.
+    With no price there is nothing to be below."""
+    broker = FakeBroker(bid=0.04, ask=0.05)
+
+    result = await paste(_paper(storage, broker), text=NO_PRICE)
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders and broker.orders[0][3] is None  # a market order
+
+
+async def test_a_no_price_alert_is_recorded_without_a_price(storage, no_price):
+    await paste(_paper(storage, FakeBroker()), text=NO_PRICE, message_id=700_001)
+
+    row = storage.get_alert(700_001)
+    assert row["status"] == STATUS_ACCEPTED
+    assert row["entry_price"] is None
+
+
+async def test_a_no_price_alert_with_no_ask_is_skipped(storage, no_price):
+    broker = FakeBroker(bid=None, ask=None)
+
+    result = await paste(_paper(storage, broker), text=NO_PRICE)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    assert "names no price" in find(result, "skipped").description
+
+
+async def test_a_no_price_alert_whose_quote_fails_is_skipped(storage, no_price):
+    broker = FakeBroker(quote_raises=True)
+
+    result = await paste(_paper(storage, broker), text=NO_PRICE)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+
+
+async def test_a_no_price_alert_needs_a_quote_even_in_dry_run(storage, no_price):
+    """A priced alert in dry run sizes off its own price when the quote fails.
+    A no-price alert has nothing else to size from."""
+    settings = make_settings()
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), FakeBroker(quote_raises=True))
+
+    result = await paste(pipeline, text=NO_PRICE)
+
+    assert result.final_reaction == REACTION_SKIPPED
+
+
+async def test_the_dry_run_card_shows_no_cap_for_a_no_price_alert(pipeline, no_price):
+    result = await paste(pipeline, text=NO_PRICE)
+
+    values = {name: value for name, value, _ in find(result, "WOULD BUY").fields}
+    assert values["Order"].endswith("@ MKT")
+    assert values["Skip if ask above"] == "no cap · no price given"
+
+
+async def test_a_no_price_alert_still_respects_the_per_contract_limit(storage, no_price):
+    broker = FakeBroker(bid=0.50, ask=0.51)
+    settings = make_settings(mode="paper", risk={"max_contract_price": 0.50})
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text=NO_PRICE)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    assert "0.50 per-contract limit" in find(result, "skipped").description
+
+
+async def test_a_no_price_alert_still_respects_a_halt(storage, no_price):
+    broker = FakeBroker()
+    pipeline = _paper(storage, broker)
+    pipeline.risk.halt("manual")
+
+    result = await paste(pipeline, text=NO_PRICE)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+
+
+async def test_a_no_price_alert_still_respects_the_entry_cutoff(storage, no_price):
+    broker = FakeBroker()
+
+    result = await paste(
+        _paper(storage, broker),
+        text=NO_PRICE,
+        moment=datetime(2026, 10, 6, 15, 45, tzinfo=EASTERN),
+    )
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+
+
+async def test_a_priced_one_line_alert_still_honours_the_buffer(storage, no_price):
+    """The same ask that a no-price alert buys into is still refused for an
+    alert that named 0.475."""
+    broker = FakeBroker(bid=1.99, ask=2.00)
+
+    result = await paste(_paper(storage, broker), text=SIMPLE)
 
     assert result.final_reaction == REACTION_SKIPPED
     assert broker.orders == []

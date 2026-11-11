@@ -418,8 +418,34 @@ class AlertPipeline:
                 return
 
         quote = await self._quote(spec)
-        reference_price = alert.entry_price
-        cap_price = reference_price * (1 + settings.entry.max_slippage_pct / 100.0)
+        ask = quote.ask if quote is not None and quote.ask and quote.ask > 0 else None
+
+        # A one-line alert may name no price (`TSLA 397.5C`). That is an order
+        # to buy at market whatever the ask: no slippage cap, no check against
+        # an alert price, because there is none. The ask is all there is to
+        # size from, so without one -- in dry run too -- nothing is ordered.
+        price_given = alert.entry_price is not None
+        if price_given:
+            reference_price = alert.entry_price
+            cap_price: float | None = reference_price * (1 + settings.entry.max_slippage_pct / 100.0)
+        else:
+            if ask is None:
+                detail = (
+                    "the alert names no price and there is no live ask, so there is "
+                    "nothing to size a market order from. Nothing was ordered."
+                )
+                record(STATUS_SKIPPED, f"no_ask: {detail}")
+                self.storage.bump_day(trading_day, alerts_skipped=1)
+                result.add(
+                    REACTION_SKIPPED,
+                    alert_skipped(
+                        reason="no_ask", detail=detail, jump_url=jump_url,
+                        option=alert.option, today=trading_day,
+                    ),
+                )
+                return
+            reference_price = ask
+            cap_price = None
 
         max_price = settings.risk.max_contract_price
         if max_price is not None:
@@ -440,18 +466,18 @@ class AlertPipeline:
                 return
             # The limit is on what we could PAY, not only on the quoted entry:
             # a $2.95 alert's slippage cap would otherwise allow an ask of $3.25.
-            cap_price = min(cap_price, max_price)
+            cap_price = max_price if cap_price is None else min(cap_price, max_price)
 
         # With no trim targets -- a one-line alert, or a card whose ladder was
         # missing -- nothing has checked that the entry price was read right
         # or that this is the contract meant, so the live market does. Dry run
         # has no broker and sends nothing, so there is nothing to check there.
-        if not alert.trim_targets and self.broker is not None:
+        # An alert that names no price has nothing to check: it buys at market.
+        if price_given and not alert.trim_targets and self.broker is not None:
             floor_pct = settings.entry.max_ask_below_alert_pct
             floor = reference_price * (1 - floor_pct / 100.0)
-            ask = quote.ask if quote is not None else None
             mismatch = None
-            if not ask:
+            if ask is None:
                 mismatch = (
                     "no live ask for this contract, so the alert price cannot be checked "
                     "against the market. Nothing was ordered."
@@ -483,7 +509,6 @@ class AlertPipeline:
         # between the alert price and whatever the book charges. No ask, no
         # order: there is nothing to hold it against. Dry run sends nothing,
         # so a missing quote does not block it.
-        ask = quote.ask if quote is not None and quote.ask and quote.ask > 0 else None
         if not self.dry_run and self.broker is not None and ask is None:
             detail = (
                 "no live ask for this contract, so a market order could fill at any "
@@ -500,7 +525,8 @@ class AlertPipeline:
             )
             return
 
-        if ask is not None and settings.entry.skip_if_ask_above_cap:
+        # No cap means no price was given: buy at whatever the market asks.
+        if ask is not None and cap_price is not None and settings.entry.skip_if_ask_above_cap:
             if ask > cap_price:
                 if max_price is not None and cap_price >= max_price:
                     why = f"the {max_price:.2f} per-contract limit"
@@ -596,7 +622,7 @@ class AlertPipeline:
         parsed_note = alert_parsed(
             option=alert.option,
             occ_symbol=spec.occ_symbol,
-            entry_price=reference_price,
+            entry_price=alert.entry_price,
             advisor_contracts=alert.advisor_contracts,
             our_contracts=contracts,
             cost=cost,

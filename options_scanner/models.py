@@ -94,7 +94,9 @@ class EntryAlert:
 
     message_id: int
     option: OptionKey
-    entry_price: float
+    # None: a one-line alert that named no price (`TSLA 397.5C`), bought at
+    # market with no price buffer. A card always carries its price.
+    entry_price: float | None
     advisor_contracts: int
     advisor_cost: float
     trim_targets: tuple[TrimTarget, ...]

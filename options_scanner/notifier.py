@@ -327,12 +327,13 @@ def would_place_entry(
     *,
     option: OptionKey,
     qty: int,
-    cap_price: float,
+    cap_price: float | None,
     timeout_seconds: float,
     jump_url: str | None,
     today: date | None = None,
 ) -> Notification:
-    """DRY_RUN: the order that would have gone out."""
+    """DRY_RUN: the order that would have gone out. `cap_price` None is an
+    alert that named no price: bought at market with no cap."""
     note = Notification(
         title=f"WOULD BUY — {contract_label(option, today)}",
         level=Level.INFO,
@@ -340,7 +341,7 @@ def would_place_entry(
         jump_url=jump_url,
     )
     note.add("Order", f"BUY {qty} @ MKT")
-    note.add("Skip if ask above", price(cap_price))
+    note.add("Skip if ask above", price(cap_price) if cap_price is not None else "no cap · no price given")
     note.add("Give up after", f"{timeout_seconds:.0f}s")
     return note
 
