@@ -98,6 +98,7 @@ Measured from your **actual fill price**, never the advisor's quoted entry.
 
 | Event | What happens |
 |---|---|
+| entry fills | stop at **−35%** of your fill, set on the first quote — the most a trade can lose before +25% |
 | +25% reached | sell **1/6** of the original; stop moves to your entry fill — the trade can no longer lose |
 | +50% reached | sell another 1/6; the stop holds at break-even |
 | +75% reached | sell another 1/6; stop moves to **+25%** |
@@ -110,6 +111,7 @@ The stop trails **two levels behind the price** (`stops.steps` in
 
 | Bid reaches | Sell | Left | Stop | Worst case from here |
 |---|---|---|---|---|
+| entry $1.00 | — | 6 | $0.65 | −$210 |
 | $1.25 (+25%) | 1 | 5 | $1.00 | +$25 |
 | $1.50 (+50%) | 1 | 4 | $1.00 | +$75 |
 | $1.75 (+75%) | 1 | 3 | $1.25 | +$225 |
@@ -170,9 +172,13 @@ price, with no upper end (`stops.runner_lock`). The other runners keep +50%.
 SOLD LOCKED card; a drop through both stops at once sells everything in one
 order. The lock fires once per position and survives a restart.
 
-The stop only ever moves up. There is **no stop before +25%** — that window is
-unprotected by design, and `!flatten` plus the daily loss limit are the only
-brakes on it.
+The stop only ever moves up. Before +25% it is the **−35% initial stop**
+(`[0, -35]` in `stops.steps`): on a ~$650 trade on the $2,400 account that is
+about −$210 to −$235 at worst, against the whole $650 with no stop. Stops round
+to the cent, so a cheap contract's lands a little tighter ($0.47 → $0.31,
+−34%), and a fast drop can fill below it: the exit needs 2 quotes under the
+stop and sells 2% through the bid. At about −$210 a stop-out, the $873 daily
+loss limit halts new entries after the fifth.
 
 #### Sizing
 
@@ -701,8 +707,11 @@ paper account still returns `Error 354`.
 - **The bot must stay running.** The stop exists only in this process. If the
   machine sleeps, loses network, or the process dies, an open position has no
   stop. Disable sleep during market hours and run it under a supervisor.
-- **No stop until +25% is reached.** A position that never gets there has no
-  protection at all.
+- **The −35% initial stop is the only protection before +25%.** It is set on
+  the first quote after the fill (~1.5s), so the very first seconds of a trade
+  are covered by `close !` alone. On a restart, an open position below +25%
+  with no stop gets it on its first quote — and sells within seconds if it is
+  already more than 35% down.
 - **A 1-contract position never trims**, because it cannot without breaking the
   runner. The step stops are driven by the price, so it still moves to
   break-even at +25%, +25% at +75% and +50% at +100%. (With `stops.steps`
