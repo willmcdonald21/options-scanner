@@ -331,37 +331,52 @@ def _limits_at(settings, equity, *, live=False):
 
 
 def test_the_committed_config_keeps_the_live_account_where_it_was(monkeypatch):
-    """The numbers the user chose for the ~$1,100 live options account: $300 a
-    trade, 2 open, $400 daily loss. Now formulas -- this pins that they still
-    come out the same. A change here changes how much money is at risk, so it
-    must fail a test rather than pass as a quiet diff."""
+    """The numbers the user chose for the ~$2,400 live options account: a fixed
+    $450 a trade, 2 open, $872.73 daily loss. A change here changes how much
+    money is at risk, so it must fail a test rather than pass as a quiet diff."""
     env(monkeypatch)
     settings = load_settings(load_env=False)
 
-    budget, limits = _limits_at(settings, 1_100.0, live=True)
+    budget, limits = _limits_at(settings, 2_400.0, live=True)
 
-    assert budget.cap_usd == 300.00
+    assert budget.cap_usd == 450.00
     assert limits.max_open_positions == 2
-    assert limits.max_daily_loss_usd == 400.00
+    assert limits.max_daily_loss_usd == pytest.approx(872.73)
     assert limits.max_trades_per_day is None
     assert settings.risk.max_contract_price is None  # no per-contract ceiling
     assert settings.entry.max_slippage_pct == 15
 
 
-def test_the_committed_config_rehearses_a_4000_account_on_paper(monkeypatch):
-    """Paper only: sized as $4,000, so each call buys several contracts and
-    the 50% / 25% trims and the stops get exercised."""
+def test_the_committed_config_rehearses_the_live_account_on_paper(monkeypatch):
+    """Paper only: sized as the $2,400 live account, so paper buys exactly what
+    live would and hits the same open-position and daily-loss limits."""
     env(monkeypatch)
     settings = load_settings(load_env=False)
     assert settings.mode is Mode.PAPER
 
     budget, limits = _limits_at(settings, 32_334.98)  # the real paper balance
 
-    assert budget.sizing_equity == 4_000.0
-    assert budget.cap_usd == pytest.approx(1_090.91)
+    assert budget.sizing_equity == 2_400.0
+    assert budget.cap_usd == 450.00
     assert limits.max_open_positions == 2
-    assert limits.max_daily_loss_usd == pytest.approx(1_454.54)
+    assert limits.max_daily_loss_usd == pytest.approx(872.73)
     assert limits.max_trades_per_day is None
+
+
+def test_the_committed_config_sizes_lottos_at_half_and_a_quarter(monkeypatch):
+    from options_scanner.sizing import trade_budget
+
+    env(monkeypatch)
+    r = load_settings(load_env=False).risk
+    caps = {
+        tier: trade_budget(
+            2_400.0, tier, unit_pct=r.unit_pct_of_account, small_account_below=r.small_account_below,
+            small_account_budget_usd=r.small_account_budget_usd,
+            small_account_budget_pct=r.small_account_budget_pct, ceiling_usd=r.max_usd_per_trade,
+        ).cap_usd
+        for tier in ("normal", "lotto", "super_lotto")
+    }
+    assert caps == {"normal": 450.0, "lotto": 225.0, "super_lotto": 112.5}
 
 
 def test_paper_equity_never_applies_in_live(monkeypatch):
@@ -369,7 +384,7 @@ def test_paper_equity_never_applies_in_live(monkeypatch):
     settings = load_settings(load_env=False)
     live = settings.model_copy(update={"mode": Mode.LIVE})
 
-    assert settings.sizing_cap() == 4_000.0
+    assert settings.sizing_cap() == 2_400.0
     assert live.sizing_cap() is None
 
 
@@ -389,8 +404,8 @@ def test_the_summary_names_the_budget_that_actually_sizes(monkeypatch):
     env(monkeypatch)
     line = load_settings(load_env=False).summary_line()
 
-    assert "27.2727% below $5,000 equity" in line
-    assert "sized as at most $4,000" in line
+    assert "$450 below $5,000 equity" in line
+    assert "sized as at most $2,400" in line
     assert "contracts <=" not in line  # no per-contract ceiling
 
 
