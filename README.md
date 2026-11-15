@@ -182,26 +182,29 @@ loss limit halts new entries after the fifth.
 
 #### Sizing
 
-Every money limit is a **formula of the account**, so one config serves both
-the live options account and the paper rehearsal:
+Each trade gets a **fixed $450**; the other limits are formulas of the
+account, and paper is sized as the live account, so both come out the same:
 
-| | Formula | Live ($1,100) | Paper ($4,000) |
+| | Rule | Live ($2,400) | Paper (sized as $2,400) |
 |---|---|---|---|
-| Per trade (under $5,000) | 27.27% of the account | $300 | $1,090.91 |
+| Per trade (under $5,000) | fixed `small_account_budget_usd` | $450 | $450 |
+| Lotto / super lotto | half / a quarter of a trade | $225 / $112.50 | $225 / $112.50 |
 | Contracts open at once | 55% of the account ÷ one trade | 2 | 2 |
-| Daily loss limit | 36.36% of the account | $400 | $1,454.54 |
+| Daily loss limit | 36.36% of the account | $872.73 | $872.73 |
 | Trades per day | — | no cap | no cap |
-| Lotto / super lotto | half / a quarter of a trade | $150 / $75 | $545 / $273 |
 
-**Paper sizes as a $4,000 account** (`risk.paper_equity`), so each call buys
-several contracts and the trims and stops get exercised: $2.18 buys 5, $1.00
-buys 10. The paper account is shared with warrior_bot and holds far more, so
-it has to be told what it is rehearsing. **Live never uses `paper_equity`**; it
-always sizes off its real balance.
+At $450: $0.25 buys 18, $0.50 buys 9, $1.00 buys 4, $3.00 buys 1, and anything
+over $4.50 is skipped. At the −35% initial stop a full trade risks about
+$140–$160.
+
+**Paper sizes as the $2,400 live account** (`risk.paper_equity`). The paper
+account is shared with warrior_bot and holds far more, so it has to be told
+what it is rehearsing. **Live never uses `paper_equity`**; it always sizes off
+its real balance.
 
 At or above $5,000 the guide's unit takes over: `risk.unit_pct_of_account`%
-(3%) per trade, with `risk.max_usd_per_trade` as an absolute ceiling on any one
-trade.
+(3%) per trade — only $150 at $5,000, a sharp drop from $450 — with
+`risk.max_usd_per_trade` ($450) as an absolute ceiling on any one trade.
 
 Contracts are counted at the **live ask** when it is above the alert price,
 since that is what a market order pays: $1,000 buys 21 at a $0.475 alert but
@@ -276,13 +279,14 @@ mode: paper                       # dry_run | paper | live
 entry:
   max_slippage_pct: 15            # skip if the ask is more than 15% above the alert
 risk:
-  paper_equity: 4000              # paper only: rehearse this account size
-  small_account_budget_pct: 27.2727   # per trade below $5,000 ($300 on $1,100)
+  paper_equity: 2400              # paper only: rehearse this account size
+  small_account_budget_pct: null  # off: use the fixed amount below
+  small_account_budget_usd: 450   # per trade below $5,000
   max_contract_price: null        # no per-contract ceiling
   max_deployed_pct: 55            # contracts open = account x 55% / one trade
-  max_daily_loss_pct: 36.3636     # halts new entries ($400 on $1,100)
+  max_daily_loss_pct: 36.3636     # halts new entries ($872.73 on $2,400)
   max_trades_per_day: null        # no cap
-  max_usd_per_trade: 1100         # absolute ceiling on one trade
+  max_usd_per_trade: 450          # absolute ceiling on one trade
   unit_pct_of_account: 3.0        # at or above $5,000
   lotto_multiplier: 0.5           # "lotto = half"
   super_lotto_multiplier: 0.25    # "super lotto = a quarter"
