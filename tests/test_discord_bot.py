@@ -507,6 +507,29 @@ async def test_anything_else_in_the_alerts_channel_is_still_an_alert(storage):
     assert answers == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    ["<@&1556749723384291338>", "  <@&1556749723384291338>  ", "<@123> <@!456>", "@everyone", "@here <@&1>"],
+)
+async def test_a_bare_ping_in_the_alerts_channel_is_dropped_quietly(storage, text):
+    bot, posted, answers, pasted = _alerts_bot(storage)
+    message = FakeMessage(text)
+
+    await bot.on_message(message)
+
+    assert pasted == [] and answers == [] and posted == []
+    assert message.reactions == []
+
+
+@pytest.mark.parametrize("text", ["<@&1556749723384291338> IWM 281c .37", "<@&1>\nQQQ 718P 1.99", ""])
+async def test_a_ping_with_anything_else_still_goes_to_the_parser(storage, text):
+    bot, _, _, pasted = _alerts_bot(storage)
+
+    await bot.on_message(FakeMessage(text))
+
+    assert pasted == [text]
+
+
 async def test_a_close_from_anyone_else_is_ignored(storage):
     bot, _, answers, pasted = _alerts_bot(storage)
 

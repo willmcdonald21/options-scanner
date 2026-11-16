@@ -96,6 +96,16 @@ _TICKER = re.compile(r"^\$?[A-Za-z]{1,6}$")
 _STRIKE = re.compile(r"^\d+(\.\d+)?[CPcp]$")
 _OCC_TAIL = re.compile(r"^\d{6}[CPcp]\d{8}$")
 
+# A message that is nothing but pings -- `<@&1556749723384291338>`, the role
+# ping the analyst posts ahead of an alert, or a user, @everyone or @here.
+# It carries no alert, so it is dropped quietly instead of answered with an
+# UNREADABLE card. A ping with anything else in the message is still parsed.
+_MENTIONS_ONLY = re.compile(r"^(?:\s*(?:<@[!&]?\d+>|@everyone|@here))+\s*$")
+
+
+def is_mentions_only(text: str) -> bool:
+    return bool(_MENTIONS_ONLY.match(text or ""))
+
 
 def parse_close_command(text: str) -> list[str] | None:
     """The `match_positions` arguments a close command names, ["!"] for
@@ -558,6 +568,9 @@ class SwiftAlertBot(discord.Client):
         if message.channel.id == self.settings.discord.alerts_channel_id:
             if message.author.id != self.settings.discord.owner_user_id:
                 logger.debug("ignoring alerts-channel message from %s", message.author.id)
+                return
+            if is_mentions_only(message.content):
+                logger.info("ignoring a bare ping in the alerts channel: %s", message.content.strip())
                 return
             close_args = parse_close_command(message.content)
             if close_args is not None:
