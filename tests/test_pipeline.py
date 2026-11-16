@@ -832,6 +832,34 @@ async def test_a_one_line_lotto_is_sized_at_half_a_unit(storage):
     assert values["Our size"].startswith("6 contracts")
 
 
+async def test_a_one_line_slotto_is_sized_at_a_quarter_unit(storage):
+    """`SPX 7815P 0.475 slotto`: $600 quartered is $150, 3 at the $0.48 ask."""
+    broker = FakeBroker()
+    broker.get_account = _equity(20_000.0)
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text=SIMPLE + " slotto")
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders == [(SPX_OCC, "BUY", 3, None)]
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert values["Our size"].startswith("3 contracts")
+
+
+async def test_a_lotto_word_mid_line_sizes_the_one_line_alert(storage):
+    """`SPX lotto 7815P 0.475`: the word is read wherever it sits."""
+    broker = FakeBroker()
+    broker.get_account = _equity(20_000.0)
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text="SPX lotto 7815P 0.475")
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders == [(SPX_OCC, "BUY", 6, None)]
+
+
 async def test_a_one_line_alert_priced_far_above_the_market_is_skipped(storage):
     """Alert says 0.475; the contract asks 0.31, 35% below. A typo, or not
     the contract the analyst meant -- skip rather than buy it cheaply."""
