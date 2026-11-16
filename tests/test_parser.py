@@ -605,6 +605,14 @@ def test_a_date_may_follow_the_strike(text, price):
         ("IWM 281C LOTTO", "lotto"),
         ("Super lotto IWM 281c .37", "super_lotto"),
         ("IWM 281c .37 super lotto", "super_lotto"),
+        ("slotto IWM 281c .37", "super_lotto"),
+        ("IWM 281c .37 slotto", "super_lotto"),
+        ("IWM 281C SLOTTO", "super_lotto"),
+        ("IWM 281c .37 superlotto", "super_lotto"),
+        ("IWM lotto 281c .37", "lotto"),       # anywhere in the line
+        ("IWM 281c lotto .37", "lotto"),
+        ("IWM slotto 281c .37", "super_lotto"),
+        ("$IWM 281c lotto @.37", "lotto"),
         ("IWM 281c .37", "normal"),
     ],
 )
@@ -709,8 +717,11 @@ def test_a_zero_price_is_rejected():
     [
         "QQQ 718P 1.99 yolo",        # anything extra: not this format
         "QQQ 718P yolo",
-        "lotto QQQ 718P 1.99 lotto", # a tier at both ends: not guessing
+        "lotto QQQ 718P 1.99 lotto", # two tier words: not guessing
         "lotto QQQ 718P super lotto",
+        "QQQ lotto 718P 1.99 slotto",
+        "QQQ 718P 1.99 lotto!",      # a tier word must stand alone
+        "QQQ 718P 1.99 lottos",
         "super QQQ 718P 1.99",       # "super" alone is not a tier
         "718P 1.99",                 # no ticker
         "718P",

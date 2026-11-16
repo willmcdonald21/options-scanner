@@ -324,11 +324,14 @@ def _parse_average_down(card: ParsedCard, title: str, today: date) -> ParseResul
 # `avg QQQ 718P 1.50`, `QQQ 718P 1.50 avg down`, `average down ...`.
 _AVG_KEYWORD = r"(?:avg|avg\s+down|average\s+down|averaging\s+down)"
 
-# The sizing tier as a word on the outside of the line, front or back:
-# `Lotto IWM 281c .37`, `QQQ 718P 1.99 super lotto`, `lotto avg QQQ 718P`.
-# Without one the trade is sized as a normal unit. "super lotto" is tried
-# first, for the same reason as _SUPER_LOTTO_RE.
-_TIER_KEYWORD = r"(?:super\s+lotto|lotto)"
+# The sizing tier as a word of its own, anywhere in the line:
+# `Lotto IWM 281c .37`, `QQQ lotto 718P 1.99`, `IWM 281c .37 slotto`.
+# `lotto` is a lotto; `slotto`, `super lotto` and `superlotto` are a super
+# lotto. Without one the trade is sized as a normal unit. The word is taken
+# out before the rest is matched, so what is left must still be a whole
+# alert. It must stand alone between spaces: `lotto!` is not read. Two tier
+# words are not read either, rather than guessing which size was meant.
+_TIER_WORD_RE = re.compile(r"(?<!\S)(super\s*lotto|slotto|lotto)(?!\S)", re.IGNORECASE)
 
 
 def _date_group(n: int) -> str:
@@ -337,16 +340,14 @@ def _date_group(n: int) -> str:
 
 _DATE_SLOTS = (1, 2, 3)
 _SIMPLE_ALERT_RE = re.compile(
-    rf"^\s*(?:(?P<pre_tier>{_TIER_KEYWORD})\s+)?"
-    rf"(?:(?P<pre>{_AVG_KEYWORD})\s+)?"
+    rf"^\s*(?:(?P<pre>{_AVG_KEYWORD})\s+)?"
     r"\$?(?P<ticker>[A-Za-z]{1,6})"
     rf"(?:\s+{_date_group(1)})?"
     r"\s+(?P<strike>\d+(?:\.\d+)?)\s*(?P<right>[CcPp])"
     rf"(?:\s+{_date_group(2)})?"
     r"(?:\s+@?\s*\$?(?P<price>\d*\.?\d+))?"
     rf"(?:\s+{_date_group(3)})?"
-    rf"(?:\s+(?P<post>{_AVG_KEYWORD}))?"
-    rf"(?:\s+(?P<post_tier>{_TIER_KEYWORD}))?\s*$",
+    rf"(?:\s+(?P<post>{_AVG_KEYWORD}))?\s*$",
     re.IGNORECASE,
 )
 
@@ -363,7 +364,13 @@ def parse_simple_alert(text: str, *, message_id: int, today: date) -> EntryAlert
     """
     if "\n" in (text or "").strip():
         return None
-    match = _SIMPLE_ALERT_RE.match(text or "")
+    tier_words = _TIER_WORD_RE.findall(text or "")
+    if len(tier_words) > 1:
+        return None  # two tier words: not guessing which size was meant
+    tier: Tier = "normal"
+    if tier_words:
+        tier = "lotto" if tier_words[0].lower() == "lotto" else "super_lotto"
+    match = _SIMPLE_ALERT_RE.match(_TIER_WORD_RE.sub(" ", text or ""))
     if not match:
         return None
     dates = [
@@ -373,12 +380,6 @@ def parse_simple_alert(text: str, *, message_id: int, today: date) -> EntryAlert
     ]
     if len(dates) > 1:
         return None  # two expiries named: not guessing which was meant
-    tier_words = [w for w in (match["pre_tier"], match["post_tier"]) if w]
-    if len(tier_words) > 1:
-        return None  # a tier at both ends: not guessing which size was meant
-    tier: Tier = "normal"
-    if tier_words:
-        tier = "super_lotto" if _SUPER_LOTTO_RE.search(tier_words[0]) else "lotto"
 
     ticker = match["ticker"].upper()
     right = match["right"].upper()
