@@ -42,6 +42,7 @@ QQQ 718P 1.99              today's QQQ 718 put at $1.99
 iwm 271p .7                case and a bare decimal are fine
 QQQ 10/16 718P 1.99        a date overrides "today"
 AAPL 352.5P 11/18          ...before or after the strike, or after the price
+11/18 AAPL 352.5P 2.40     ...or before the ticker
 TSLA 397.5C                no price: buy at market, whatever the ask
 Lotto IWM 281c .37         sized as a lotto: half a trade
 IWM 281c .37 slotto        sized as a super lotto: a quarter of a trade
@@ -50,7 +51,7 @@ QQQ lotto 718P 1.99        the word can go anywhere in the line
 
 No date means **today's contract**. That was checked against the live chain:
 QQQ 718P at 1.99 matched only the same-day put. A date may be written once,
-before the strike, right after it, or after the price. The whole message must
+before the ticker, before the strike, right after it, or after the price. The whole message must
 match; anything extra is not read as an alert. This format has no checksum, so
 the live market stands in for one: the alert is skipped if the ask is more than
 **25% below** its price (a typo, or not the contract meant) or if there is no
@@ -68,7 +69,19 @@ Two tier words in one line (`lotto … slotto`) are not read, so the bot never
 has to guess the size, and nor is one stuck to punctuation (`lotto!`). At $450
 a lotto can still buy one contract up to $2.25, and a super lotto up to $1.12;
 above that it is skipped as `budget_too_small`. A message that is nothing but
-a role ping is ignored without a reply.
+a role ping is ignored without a reply; a ping in front of an alert is taken
+out and the alert read.
+
+**Forwarding** an alert from the advisor's server into the alerts channel works
+like pasting it, for both the one-line alerts and the BUY card. The card is
+read as its copy-paste would be and gets the same checks. From any alert the bot
+takes only the **contract** (ticker, strike, put or call, expiry), the **entry
+price** and the **lotto tag**. The advisor's contract count and cost are shown
+but never used for sizing. The card's trim targets are only a check that the
+entry was read right, and are never traded. Every exit follows the bot's own
+trim ladder and stops. The raw forward is written to the log, so a card that
+arrives in an unexpected shape can be checked. A forwarded screenshot has no
+text to read and is still answered as unreadable.
 
 **With no price**, there is nothing to hold the ask against, so there is **no
 price buffer**: neither the 15%-above cap nor the 25%-below check applies, and
