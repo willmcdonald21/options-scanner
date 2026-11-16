@@ -1021,6 +1021,76 @@ async def test_a_priced_one_line_alert_still_honours_the_buffer(storage):
     assert broker.orders == []
 
 
+# --- the three one-line forms, as specified on 2026-11-16 -------------------
+#
+#   AAPL 352.5P 11/18   the 11/18 put, bought at market
+#   AAPL 352.5P         today's put, bought at market if it fits the budget
+#   AAPL 352.5P 1.15    today's put, only inside the buffer around 1.15
+#
+# Run with the live config's 15% buffer; the test budget is $1,000.
+
+NOV_16 = date(2026, 11, 16)
+NOV_16_MIDDAY = datetime(2026, 11, 16, 11, 0, tzinfo=EASTERN)
+AAPL_0DTE = "AAPL  261116P00352500"
+
+
+async def _aapl(storage, text, *, ask):
+    broker = FakeBroker(bid=round(ask - 0.01, 2), ask=ask)
+    result = await paste(
+        _paper(storage, broker, max_slippage_pct=15), text=text,
+        moment=NOV_16_MIDDAY, trading_day=NOV_16,
+    )
+    return result, broker
+
+
+async def test_a_dated_put_buys_that_expiry_at_market(storage):
+    result, broker = await _aapl(storage, "AAPL 352.5P 11/18", ask=3.10)
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders == [("AAPL  261118P00352500", "BUY", 3, None)]  # $1,000 / $310
+
+
+async def test_an_undated_no_price_put_is_todays_bought_at_market(storage):
+    result, broker = await _aapl(storage, "AAPL 352.5P", ask=2.00)
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders == [(AAPL_0DTE, "BUY", 5, None)]  # $1,000 / $200
+
+
+async def test_an_undated_no_price_put_over_the_budget_is_skipped(storage):
+    """One contract at $12.00 is $1,200, over the $1,000 trade budget."""
+    result, broker = await _aapl(storage, "AAPL 352.5P", ask=12.00)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    assert "budget_too_small" in find(result, "SKIPPED").to_text()
+
+
+async def test_a_priced_put_inside_the_buffer_buys(storage):
+    """1.15 x 1.15 = 1.3225 is the most it will pay; 1.30 is inside."""
+    result, broker = await _aapl(storage, "AAPL 352.5P 1.15", ask=1.30)
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders == [(AAPL_0DTE, "BUY", 7, None)]  # $1,000 / $130
+
+
+async def test_a_priced_put_that_has_run_past_the_buffer_is_skipped(storage):
+    result, broker = await _aapl(storage, "AAPL 352.5P 1.15", ask=1.35)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    assert "ask_above_cap" in find(result, "SKIPPED").to_text()
+
+
+async def test_a_priced_put_far_below_its_price_is_skipped(storage):
+    """1.15 x 0.75 = 0.8625; an ask of 0.80 is a typo or another contract."""
+    result, broker = await _aapl(storage, "AAPL 352.5P 1.15", ask=0.80)
+
+    assert result.final_reaction == REACTION_SKIPPED
+    assert broker.orders == []
+    assert "price_mismatch" in find(result, "SKIPPED").to_text()
+
+
 async def test_a_message_that_is_neither_format_is_still_unreadable(pipeline):
     result = await paste(pipeline, text="QQQ 718P 1.99 yolo")
 
