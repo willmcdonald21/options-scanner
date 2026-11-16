@@ -311,22 +311,33 @@ def _parse_average_down(card: ParsedCard, title: str, today: date) -> ParseResul
 # the ask, with no price buffer. Given, it is respected -- the pipeline skips
 # an ask too far above or below it.
 #
-# An optional `MM/DD` or `MM/DD/YY(YY)` before the strike names the expiry;
-# without one the alert means today's (0DTE) contract -- checked against the
-# live chain on 2026-10-15, when QQQ 718P at 1.99 matched only the same-day
-# put. `$` and `@` are tolerated, case is not significant. The WHOLE message
-# must match: anything extra means it is not one of these, and the bot never
-# guesses at a partial match.
+# An optional `MM/DD` or `MM/DD/YY(YY)` names the expiry. It may go before the
+# strike (`AAPL 11/18 352.5P`), right after it (`AAPL 352.5P 11/18`) or after
+# the price (`AAPL 352.5P 1.15 11/18`) -- once, not twice. Without one the
+# alert means today's (0DTE) contract -- checked against the live chain on
+# 2026-10-15, when QQQ 718P at 1.99 matched only the same-day put. `$` and `@`
+# are tolerated, case is not significant. The WHOLE message must match:
+# anything extra means it is not one of these, and the bot never guesses at a
+# partial match.
 #
 # An average-down is the same line with a keyword at the front or the back:
 # `avg QQQ 718P 1.50`, `QQQ 718P 1.50 avg down`, `average down ...`.
 _AVG_KEYWORD = r"(?:avg|avg\s+down|average\s+down|averaging\s+down)"
+
+
+def _date_group(n: int) -> str:
+    return rf"(?P<month{n}>\d{{1,2}})/(?P<day{n}>\d{{1,2}})(?:/(?P<year{n}>\d{{2}}|\d{{4}}))?"
+
+
+_DATE_SLOTS = (1, 2, 3)
 _SIMPLE_ALERT_RE = re.compile(
     rf"^\s*(?:(?P<pre>{_AVG_KEYWORD})\s+)?"
     r"\$?(?P<ticker>[A-Za-z]{1,6})"
-    r"(?:\s+(?P<month>\d{1,2})/(?P<day>\d{1,2})(?:/(?P<year>\d{2}|\d{4}))?)?"
+    rf"(?:\s+{_date_group(1)})?"
     r"\s+(?P<strike>\d+(?:\.\d+)?)\s*(?P<right>[CcPp])"
+    rf"(?:\s+{_date_group(2)})?"
     r"(?:\s+@?\s*\$?(?P<price>\d*\.?\d+))?"
+    rf"(?:\s+{_date_group(3)})?"
     rf"(?:\s+(?P<post>{_AVG_KEYWORD}))?\s*$",
     re.IGNORECASE,
 )
@@ -347,6 +358,13 @@ def parse_simple_alert(text: str, *, message_id: int, today: date) -> EntryAlert
     match = _SIMPLE_ALERT_RE.match(text or "")
     if not match:
         return None
+    dates = [
+        (match[f"month{n}"], match[f"day{n}"], match[f"year{n}"])
+        for n in _DATE_SLOTS
+        if match[f"month{n}"]
+    ]
+    if len(dates) > 1:
+        return None  # two expiries named: not guessing which was meant
 
     ticker = match["ticker"].upper()
     right = match["right"].upper()
@@ -361,18 +379,19 @@ def parse_simple_alert(text: str, *, message_id: int, today: date) -> EntryAlert
         shown = "none" if price is None else f"{price:g}"
         return reject(RejectReason.NON_POSITIVE_PRICE, f"strike {strike:g} and price {shown} must both be positive")
 
-    if match["month"]:
+    if dates:
+        month, day, year_text = dates[0]
         year = today.year
-        if match["year"]:
-            year = int(match["year"])
+        if year_text:
+            year = int(year_text)
             if year < 100:
                 year += 2000
         try:
-            expiry = date(year, int(match["month"]), int(match["day"]))
+            expiry = date(year, int(month), int(day))
         except ValueError:
             return reject(
                 RejectReason.UNPARSABLE_CONTRACT,
-                f"{match['month']}/{match['day']} is not a real date",
+                f"{month}/{day} is not a real date",
             )
         if expiry < today:
             return reject(

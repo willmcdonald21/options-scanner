@@ -576,6 +576,33 @@ def test_a_written_date_overrides_today(text, expected):
     assert not alert.is_zero_dte
 
 
+@pytest.mark.parametrize(
+    "text,price",
+    [
+        ("AAPL 352.5P 11/18", None),          # the real 2026-11-16 alert, no price
+        ("AAPL 352.5P 11/18 1.15", 1.15),     # date after the strike, then the price
+        ("AAPL 352.5P 1.15 11/18", 1.15),     # date after the price
+        ("aapl 352.5p 11/18/26", None),
+        ("AAPL 352.5P 11/18/2026 @ $1.15", 1.15),
+        ("AAPL 11/18 352.5P", None),          # the original spot still works
+    ],
+)
+def test_a_date_may_follow_the_strike(text, price):
+    alert = _simple(text, today=date(2026, 11, 16))
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.option == OptionKey("AAPL", date(2026, 11, 18), 352.5, "P")
+    assert alert.entry_price == price
+    assert not alert.is_zero_dte
+
+
+def test_a_date_after_the_strike_that_has_passed_is_rejected():
+    result = _simple("AAPL 352.5P 11/13", today=date(2026, 11, 16))
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.EXPIRY_IN_PAST
+
+
 def test_a_past_date_is_rejected_not_rolled_to_next_year():
     """Rolling 10/14 forward to 2027 would buy a contract nobody asked for."""
     result = _simple("QQQ 10/14 718P 1.99")
@@ -650,7 +677,8 @@ def test_a_zero_price_is_rejected():
         "BUY — QQQ 730C · 0DTE",     # a card's title
         "anyone filled on QQQ?",
         "TSLA 400 calls",            # words, not the format
-        "QQQ 718P 10/16",            # a date goes before the strike
+        "QQQ 10/16 718P 10/17",      # two expiries: not guessing which
+        "QQQ 718P 10/16 1.99 10/17",
         "",
     ],
 )
