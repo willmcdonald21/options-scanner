@@ -312,8 +312,9 @@ def _parse_average_down(card: ParsedCard, title: str, today: date) -> ParseResul
 # an ask too far above or below it.
 #
 # An optional `MM/DD` or `MM/DD/YY(YY)` names the expiry. It may go before the
-# strike (`AAPL 11/18 352.5P`), right after it (`AAPL 352.5P 11/18`) or after
-# the price (`AAPL 352.5P 1.15 11/18`) -- once, not twice. Without one the
+# ticker (`11/18 AAPL 352.5P 2.40`, as the analyst posted on 2026-11-16), before
+# the strike (`AAPL 11/18 352.5P`), right after it (`AAPL 352.5P 11/18`) or
+# after the price (`AAPL 352.5P 1.15 11/18`) -- once, not twice. Without one the
 # alert means today's (0DTE) contract -- checked against the live chain on
 # 2026-10-15, when QQQ 718P at 1.99 matched only the same-day put. `$` and `@`
 # are tolerated, case is not significant. The WHOLE message must match:
@@ -338,9 +339,10 @@ def _date_group(n: int) -> str:
     return rf"(?P<month{n}>\d{{1,2}})/(?P<day{n}>\d{{1,2}})(?:/(?P<year{n}>\d{{2}}|\d{{4}}))?"
 
 
-_DATE_SLOTS = (1, 2, 3)
+_DATE_SLOTS = (0, 1, 2, 3)
 _SIMPLE_ALERT_RE = re.compile(
     rf"^\s*(?:(?P<pre>{_AVG_KEYWORD})\s+)?"
+    rf"(?:{_date_group(0)}\s+)?"
     r"\$?(?P<ticker>[A-Za-z]{1,6})"
     rf"(?:\s+{_date_group(1)})?"
     r"\s+(?P<strike>\d+(?:\.\d+)?)\s*(?P<right>[CcPp])"

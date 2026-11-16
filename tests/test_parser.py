@@ -585,6 +585,11 @@ def test_a_written_date_overrides_today(text, expected):
         ("aapl 352.5p 11/18/26", None),
         ("AAPL 352.5P 11/18/2026 @ $1.15", 1.15),
         ("AAPL 11/18 352.5P", None),          # the original spot still works
+        ("11/18 AAPL 352.5P 2.40", 2.40),     # the forwarded 2026-11-16 alert: date first
+        ("11/18 $AAPL 352.5P", None),
+        ("11/18/26 AAPL 352.5P 2.40", 2.40),
+        ("avg 11/18 AAPL 352.5P 2.40", 2.40),
+        ("11/18 AAPL 352.5P 2.40 lotto", 2.40),
     ],
 )
 def test_a_date_may_follow_the_strike(text, price):
@@ -732,6 +737,8 @@ def test_a_zero_price_is_rejected():
         "TSLA 400 calls",            # words, not the format
         "QQQ 10/16 718P 10/17",      # two expiries: not guessing which
         "QQQ 718P 10/16 1.99 10/17",
+        "10/16 QQQ 718P 10/17",
+        "10/16 QQQ 10/17 718P",
         "",
     ],
 )
