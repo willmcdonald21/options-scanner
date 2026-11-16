@@ -43,7 +43,9 @@ iwm 271p .7                case and a bare decimal are fine
 QQQ 10/16 718P 1.99        a date overrides "today"
 AAPL 352.5P 11/18          ...before or after the strike, or after the price
 TSLA 397.5C                no price: buy at market, whatever the ask
-Lotto IWM 281c .37         sized as a lotto: half a trade (super lotto: a quarter)
+Lotto IWM 281c .37         sized as a lotto: half a trade
+IWM 281c .37 slotto        sized as a super lotto: a quarter of a trade
+QQQ lotto 718P 1.99        the word can go anywhere in the line
 ```
 
 No date means **today's contract**. That was checked against the live chain:
@@ -54,9 +56,19 @@ the live market stands in for one: the alert is skipped if the ask is more than
 **25% below** its price (a typo, or not the contract meant) or if there is no
 ask to check against.
 
-`lotto` or `super lotto` goes at the very front or the very back, outside any
-`avg`. Without one the trade is sized as a normal unit. A message that is
-nothing but a role ping is ignored without a reply.
+The tier word can go anywhere in the line, as a word of its own, in any case:
+
+| Word | Sized as | At $450 a trade |
+|---|---|---|
+| `lotto` | lotto: half a trade | $225 |
+| `slotto`, `super lotto`, `superlotto` | super lotto: a quarter | $112.50 |
+| none | normal | $450 |
+
+Two tier words in one line (`lotto … slotto`) are not read, so the bot never
+has to guess the size, and nor is one stuck to punctuation (`lotto!`). At $450
+a lotto can still buy one contract up to $2.25, and a super lotto up to $1.12;
+above that it is skipped as `budget_too_small`. A message that is nothing but
+a role ping is ignored without a reply.
 
 **With no price**, there is nothing to hold the ask against, so there is **no
 price buffer**: neither the 15%-above cap nor the 25%-below check applies, and
