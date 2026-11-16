@@ -46,16 +46,17 @@ TSLA 397.5C                no price: buy at market, whatever the ask
 Lotto IWM 281c .37         sized as a lotto: half a trade (super lotto: a quarter)
 ```
 
-No date means **today's contract**; a date may be written once, before the
-strike, right after it, or after the price. `lotto` or `super lotto` goes at the
-very front or the very back, outside any `avg`. Without one the trade is sized as
-a normal unit. A message that is nothing but a role ping is ignored without a
-reply. That was checked against the live chain:
-QQQ 718P at 1.99 matched only the same-day put. The whole message must match;
-anything extra is not read as an alert. This format has no checksum, so the
-live market stands in for one: the alert is skipped if the ask is more than
+No date means **today's contract**. That was checked against the live chain:
+QQQ 718P at 1.99 matched only the same-day put. A date may be written once,
+before the strike, right after it, or after the price. The whole message must
+match; anything extra is not read as an alert. This format has no checksum, so
+the live market stands in for one: the alert is skipped if the ask is more than
 **25% below** its price (a typo, or not the contract meant) or if there is no
 ask to check against.
+
+`lotto` or `super lotto` goes at the very front or the very back, outside any
+`avg`. Without one the trade is sized as a normal unit. A message that is
+nothing but a role ping is ignored without a reply.
 
 **With no price**, there is nothing to hold the ask against, so there is **no
 price buffer**: neither the 15%-above cap nor the 25%-below check applies, and
