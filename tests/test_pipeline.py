@@ -816,6 +816,22 @@ async def test_a_one_line_alert_is_parsed_sized_and_ordered(storage):
     assert values["Advisor size"] == "not given"
 
 
+async def test_a_one_line_lotto_is_sized_at_half_a_unit(storage):
+    """`Lotto IWM 281c .37` read as a normal trade would be full size.
+    3% of $20,000 is $600, 12 at the $0.48 ask; the lotto's $300 buys 6."""
+    broker = FakeBroker()
+    broker.get_account = _equity(20_000.0)
+    settings = make_settings(mode="paper")
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(pipeline, text="Lotto " + SIMPLE)
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders == [(SPX_OCC, "BUY", 6, None)]
+    values = {name: value for name, value, _ in find(result, "PARSED").fields}
+    assert values["Our size"].startswith("6 contracts")
+
+
 async def test_a_one_line_alert_priced_far_above_the_market_is_skipped(storage):
     """Alert says 0.475; the contract asks 0.31, 35% below. A typo, or not
     the contract the analyst meant -- skip rather than buy it cheaply."""
@@ -1006,7 +1022,7 @@ async def test_a_priced_one_line_alert_still_honours_the_buffer(storage):
 
 
 async def test_a_message_that_is_neither_format_is_still_unreadable(pipeline):
-    result = await paste(pipeline, text="QQQ 718P 1.99 lotto")
+    result = await paste(pipeline, text="QQQ 718P 1.99 yolo")
 
     assert result.final_reaction == REACTION_REJECTED
 

@@ -596,6 +596,45 @@ def test_a_date_may_follow_the_strike(text, price):
     assert not alert.is_zero_dte
 
 
+@pytest.mark.parametrize(
+    "text,tier",
+    [
+        ("Lotto IWM 281c .37", "lotto"),       # the real 2026-11-12 alert
+        ("lotto IWM 281C", "lotto"),
+        ("IWM 281c .37 lotto", "lotto"),
+        ("IWM 281C LOTTO", "lotto"),
+        ("Super lotto IWM 281c .37", "super_lotto"),
+        ("IWM 281c .37 super lotto", "super_lotto"),
+        ("IWM 281c .37", "normal"),
+    ],
+)
+def test_a_lotto_word_sets_the_one_line_tier(text, tier):
+    alert = _simple(text)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.option == OptionKey("IWM", OCT_15, 281.0, "C")
+    assert alert.tier == tier
+    assert not alert.average_down
+
+
+@pytest.mark.parametrize("text", ["lotto avg QQQ 718P 1.50", "QQQ 718P 1.50 avg lotto"])
+def test_a_lotto_average_down(text):
+    alert = _simple(text)
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.tier == "lotto"
+    assert alert.average_down
+    assert alert.entry_price == 1.50
+
+
+def test_a_lotto_with_a_date():
+    alert = _simple("Lotto AAPL 352.5P 11/18 1.15", today=date(2026, 11, 16))
+
+    assert alert.tier == "lotto"
+    assert alert.option == OptionKey("AAPL", date(2026, 11, 18), 352.5, "P")
+    assert alert.entry_price == 1.15
+
+
 def test_a_date_after_the_strike_that_has_passed_is_rejected():
     result = _simple("AAPL 352.5P 11/13", today=date(2026, 11, 16))
 
@@ -668,8 +707,11 @@ def test_a_zero_price_is_rejected():
 @pytest.mark.parametrize(
     "text",
     [
-        "QQQ 718P 1.99 lotto",       # anything extra: not this format
-        "QQQ 718P lotto",
+        "QQQ 718P 1.99 yolo",        # anything extra: not this format
+        "QQQ 718P yolo",
+        "lotto QQQ 718P 1.99 lotto", # a tier at both ends: not guessing
+        "lotto QQQ 718P super lotto",
+        "super QQQ 718P 1.99",       # "super" alone is not a tier
         "718P 1.99",                 # no ticker
         "718P",
         "QQQ 718X 1.99",             # not a call or a put
@@ -813,7 +855,7 @@ def test_an_average_down_can_name_a_date():
     assert alert.option.expiry == date(2026, 10, 16)
 
 
-@pytest.mark.parametrize("text", ["avg", "avg QQQ", "QQQ 718P 1.50 avg lotto", "avg avg QQQ 718P 1.50"])
+@pytest.mark.parametrize("text", ["avg", "avg QQQ", "QQQ 718P 1.50 avg yolo", "avg avg QQQ 718P 1.50"])
 def test_a_malformed_average_down_is_not_guessed_at(text):
     assert _simple(text) is None
 

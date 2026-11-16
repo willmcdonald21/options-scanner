@@ -324,6 +324,12 @@ def _parse_average_down(card: ParsedCard, title: str, today: date) -> ParseResul
 # `avg QQQ 718P 1.50`, `QQQ 718P 1.50 avg down`, `average down ...`.
 _AVG_KEYWORD = r"(?:avg|avg\s+down|average\s+down|averaging\s+down)"
 
+# The sizing tier as a word on the outside of the line, front or back:
+# `Lotto IWM 281c .37`, `QQQ 718P 1.99 super lotto`, `lotto avg QQQ 718P`.
+# Without one the trade is sized as a normal unit. "super lotto" is tried
+# first, for the same reason as _SUPER_LOTTO_RE.
+_TIER_KEYWORD = r"(?:super\s+lotto|lotto)"
+
 
 def _date_group(n: int) -> str:
     return rf"(?P<month{n}>\d{{1,2}})/(?P<day{n}>\d{{1,2}})(?:/(?P<year{n}>\d{{2}}|\d{{4}}))?"
@@ -331,14 +337,16 @@ def _date_group(n: int) -> str:
 
 _DATE_SLOTS = (1, 2, 3)
 _SIMPLE_ALERT_RE = re.compile(
-    rf"^\s*(?:(?P<pre>{_AVG_KEYWORD})\s+)?"
+    rf"^\s*(?:(?P<pre_tier>{_TIER_KEYWORD})\s+)?"
+    rf"(?:(?P<pre>{_AVG_KEYWORD})\s+)?"
     r"\$?(?P<ticker>[A-Za-z]{1,6})"
     rf"(?:\s+{_date_group(1)})?"
     r"\s+(?P<strike>\d+(?:\.\d+)?)\s*(?P<right>[CcPp])"
     rf"(?:\s+{_date_group(2)})?"
     r"(?:\s+@?\s*\$?(?P<price>\d*\.?\d+))?"
     rf"(?:\s+{_date_group(3)})?"
-    rf"(?:\s+(?P<post>{_AVG_KEYWORD}))?\s*$",
+    rf"(?:\s+(?P<post>{_AVG_KEYWORD}))?"
+    rf"(?:\s+(?P<post_tier>{_TIER_KEYWORD}))?\s*$",
     re.IGNORECASE,
 )
 
@@ -365,6 +373,12 @@ def parse_simple_alert(text: str, *, message_id: int, today: date) -> EntryAlert
     ]
     if len(dates) > 1:
         return None  # two expiries named: not guessing which was meant
+    tier_words = [w for w in (match["pre_tier"], match["post_tier"]) if w]
+    if len(tier_words) > 1:
+        return None  # a tier at both ends: not guessing which size was meant
+    tier: Tier = "normal"
+    if tier_words:
+        tier = "super_lotto" if _SUPER_LOTTO_RE.search(tier_words[0]) else "lotto"
 
     ticker = match["ticker"].upper()
     right = match["right"].upper()
@@ -411,7 +425,7 @@ def parse_simple_alert(text: str, *, message_id: int, today: date) -> EntryAlert
         trim_targets=(),          # nor does it carry a ladder; ours is computed from the fill
         raw_title=raw_title,
         is_zero_dte=expiry == today,
-        tier="normal",
+        tier=tier,
         source="simple",
         average_down=bool(match["pre"] or match["post"]),
     )
