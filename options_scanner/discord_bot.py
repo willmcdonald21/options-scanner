@@ -18,6 +18,7 @@ permission on one of them looks identical to a bot with nothing to do.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import logging
 import signal
@@ -101,10 +102,79 @@ _OCC_TAIL = re.compile(r"^\d{6}[CPcp]\d{8}$")
 # It carries no alert, so it is dropped quietly instead of answered with an
 # UNREADABLE card. A ping with anything else in the message is still parsed.
 _MENTIONS_ONLY = re.compile(r"^(?:\s*(?:<@[!&]?\d+>|@everyone|@here))+\s*$")
+_MENTION = re.compile(r"<@[!&]?\d+>|@everyone|@here")
 
 
 def is_mentions_only(text: str) -> bool:
     return bool(_MENTIONS_ONLY.match(text or ""))
+
+
+def strip_mentions(text: str) -> str:
+    """The alert without its pings: `<@&...> 11/18 AAPL 352.5P 2.40` is the
+    one-line alert after the ping, and a ping is never part of an alert."""
+    return _MENTION.sub("", text or "").strip()
+
+
+# --- forwarded messages ------------------------------------------------------
+#
+# A forward arrives with empty content. What was forwarded is in
+# message.message_snapshots: its own text, and its embeds -- the advisor's BUY
+# card is an embed. The card is rendered back into the lines a copy-paste of it
+# has, so it goes through the same parser and every check a paste gets. Only
+# the contract, the entry and the lotto tag are traded on; the card's trim
+# targets are a checksum on the entry, and exits follow our own ladder and
+# stops (config trim / stops), never the card's.
+
+# text_import reads a card's fields only after this line, which every pasted
+# BUY card carries. Added when an embed's description lacks it (its link a
+# button rather than text), so the fields are still read.
+_DASHBOARD_LINE = "Open Live Dashboard →"
+_FENCE = re.compile(r"```(?:[A-Za-z]+\n|\n)?")
+_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_EMPHASIS = re.compile(r"\*\*|__|~~|`")
+
+
+def _plain(text: str | None) -> str:
+    """Discord markdown off, so a card reads as its copy-paste does."""
+    text = _FENCE.sub("", text or "")
+    text = _LINK.sub(r"\1", text)
+    return _EMPHASIS.sub("", text)
+
+
+def embed_text(embed: discord.Embed) -> str:
+    """One embed as a copy-paste of it reads: title, description, each field's
+    name then its value, and the footer. A blank line ends each field, so a
+    free-text field such as "Why" cannot run on into the trim targets."""
+    lines: list[str] = []
+    if embed.title:
+        lines.append(_plain(embed.title).strip())
+    description = _plain(embed.description).strip()
+    if description:
+        lines.extend(description.splitlines())
+    if embed.fields and "Open Live Dashboard" not in description:
+        lines.append(_DASHBOARD_LINE)
+    for field in embed.fields:
+        lines.append(_plain(field.name).strip())
+        lines.extend(line.strip() for line in _plain(field.value).strip().splitlines())
+        lines.append("")
+    if embed.footer and embed.footer.text:
+        lines.append(_plain(embed.footer.text).strip())
+    return "\n".join(lines)
+
+
+def forwarded(message) -> list:
+    """The snapshots a forwarded message carries; [] for anything else."""
+    return list(getattr(message, "message_snapshots", None) or [])
+
+
+def alert_text(message) -> str:
+    """Everything an alerts-channel message says, pings included: its own
+    text, then for a forward the forwarded text and each card in it."""
+    parts = [message.content or ""]
+    for snapshot in forwarded(message):
+        parts.append(snapshot.content or "")
+        parts.extend(embed_text(embed) for embed in snapshot.embeds)
+    return "\n".join(part for part in parts if part.strip())
 
 
 def parse_close_command(text: str) -> list[str] | None:
@@ -569,14 +639,16 @@ class SwiftAlertBot(discord.Client):
             if message.author.id != self.settings.discord.owner_user_id:
                 logger.debug("ignoring alerts-channel message from %s", message.author.id)
                 return
-            if is_mentions_only(message.content):
-                logger.info("ignoring a bare ping in the alerts channel: %s", message.content.strip())
+            text = alert_text(message)
+            if is_mentions_only(text):
+                logger.info("ignoring a bare ping in the alerts channel: %s", text.strip())
                 return
             close_args = parse_close_command(message.content)
             if close_args is not None:
                 await self._close_from_alerts(message, close_args)
                 return
-            await self._handle_alert(message)
+            self._log_forward(message)
+            await self._handle_alert(message, strip_mentions(text))
             return
 
         if message.channel.id == self.settings.discord.updates_channel_id:
@@ -585,7 +657,20 @@ class SwiftAlertBot(discord.Client):
             if message.content.strip().startswith(COMMAND_PREFIX):
                 await self._handle_command(message)
 
-    async def _handle_alert(self, message: discord.Message) -> None:
+    @staticmethod
+    def _log_forward(message) -> None:
+        """The raw forwarded content and cards, as Discord sent them. The card
+        renderer was written from a copy-paste, not a raw embed; if a field
+        arrives under another name or in other markdown, this shows it."""
+        for snapshot in forwarded(message):
+            logger.info(
+                "forwarded message %s: content=%r embeds=%s",
+                message.id,
+                snapshot.content,
+                json.dumps([embed.to_dict() for embed in snapshot.embeds], default=str),
+            )
+
+    async def _handle_alert(self, message: discord.Message, text: str) -> None:
         # React first. The reaction is the only in-channel evidence the paste
         # was picked up, so it has to land even if everything after it fails.
         await self._react(message, REACTION_RECEIVED)
@@ -594,7 +679,7 @@ class SwiftAlertBot(discord.Client):
             message_id=message.id,
             channel_id=message.channel.id,
             author_id=message.author.id,
-            text=message.content,
+            text=text,
             jump_url=message.jump_url,
         )
 

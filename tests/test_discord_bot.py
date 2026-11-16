@@ -1,11 +1,25 @@
 """The Discord bot's wiring of the P&L channel. No Discord connection: the bot
 is constructed but never started, and webhooks are replaced by fakes."""
 
+from datetime import date, datetime
+from types import SimpleNamespace
+
+import discord
 import pytest
-from conftest import make_settings
+from conftest import FakeBroker, make_settings, paste
 
 from options_scanner.broker.paper import PaperBroker
-from options_scanner.discord_bot import SwiftAlertBot, parse_close_command
+from options_scanner.discord_bot import (
+    SwiftAlertBot,
+    alert_text,
+    embed_text,
+    parse_close_command,
+    strip_mentions,
+)
+from options_scanner.market_hours import EASTERN
+from options_scanner.models import EntryAlert, OptionKey, RejectedAlert, RejectReason
+from options_scanner.parser import parse_card
+from options_scanner.text_import import parse_cards
 from options_scanner.notifier import (
     REACTION_PLACED,
     REACTION_QUESTION,
@@ -380,10 +394,11 @@ def test_anything_else_is_left_for_the_alert_parser(text):
 
 
 class FakeMessage:
-    def __init__(self, content, *, channel_id=1001, author_id=3003):
+    def __init__(self, content, *, channel_id=1001, author_id=3003, snapshots=None):
         from types import SimpleNamespace
 
         self.content = content
+        self.message_snapshots = snapshots or []
         self.channel = SimpleNamespace(id=channel_id)
         self.author = SimpleNamespace(id=author_id)
         self.id = 42
@@ -401,8 +416,8 @@ def _alerts_bot(storage):
     bot._alerts_webhook = FakeWebhook(channel_id="1001")
     pasted = []
 
-    async def handle_alert(message):
-        pasted.append(message.content)
+    async def handle_alert(message, text):
+        pasted.append(text)
 
     bot._handle_alert = handle_alert
     return bot, posted, bot._alerts_webhook.posted, pasted
@@ -521,13 +536,157 @@ async def test_a_bare_ping_in_the_alerts_channel_is_dropped_quietly(storage, tex
     assert message.reactions == []
 
 
-@pytest.mark.parametrize("text", ["<@&1556749723384291338> IWM 281c .37", "<@&1>\nQQQ 718P 1.99", ""])
-async def test_a_ping_with_anything_else_still_goes_to_the_parser(storage, text):
+@pytest.mark.parametrize(
+    "text,parsed",
+    [
+        ("<@&1556749723384291338> IWM 281c .37", "IWM 281c .37"),
+        ("<@&1>\nQQQ 718P 1.99", "QQQ 718P 1.99"),
+        ("QQQ 718P 1.99 @here", "QQQ 718P 1.99"),
+        ("", ""),
+    ],
+)
+async def test_a_ping_with_anything_else_goes_to_the_parser_without_the_ping(storage, text, parsed):
     bot, _, _, pasted = _alerts_bot(storage)
 
     await bot.on_message(FakeMessage(text))
 
-    assert pasted == [text]
+    assert pasted == [parsed]
+
+
+# --- forwarded messages ----------------------------------------------------
+#
+# Both from 2026-11-16 10:30, forwarded from the advisor's server: the BUY card
+# (an embed) and a one-line alert, each behind the role ping.
+
+PING = "<@&1556749723384291338>"
+NOV_16 = date(2026, 11, 16)
+TARGETS = "```\n25%   $3.000\n50%   $3.600\n75%   $4.200\n100%  $4.800\n```"
+WHY = "4H and D up, 1H mixed; 10m left the cloud down · Trend · 51% of today's range left"
+
+
+def _card(*, description=None, entry="$2.40", targets=TARGETS, bold=False):
+    b = (lambda v: f"**{v}**") if bold else (lambda v: v)
+    embed = discord.Embed(
+        title="🔴 BUY — AAPL 352.5P · Nov 18",
+        description=description
+        if description is not None
+        else "Entered AAPL Nov18 '26 352.5 Put\n[Open Live Dashboard →](https://example.com/live)",
+    )
+    embed.add_field(name="Entry", value=b(entry))
+    embed.add_field(name="Contracts", value=b("10"))
+    embed.add_field(name="Cost", value=b("$2,400"))
+    if targets:
+        embed.add_field(name="Trim Targets", value=targets, inline=False)
+    embed.add_field(name="Why", value=WHY, inline=False)
+    embed.set_footer(text="Not financial advice")
+    return embed
+
+
+def _forward(content="", embeds=()):
+    return FakeMessage("", snapshots=[SimpleNamespace(content=content, embeds=list(embeds))])
+
+
+def _read(text):
+    cards = parse_cards(text, reference_date=datetime(2026, 11, 16, 10, 30))
+    assert len(cards) == 1, text
+    return parse_card(cards[0], today=NOV_16)
+
+
+async def test_a_forwarded_one_line_alert_is_read_without_its_ping(storage):
+    bot, _, _, pasted = _alerts_bot(storage)
+
+    await bot.on_message(_forward(f"{PING}\n11/18 AAPL 352.5P 2.40"))
+
+    assert pasted == ["11/18 AAPL 352.5P 2.40"]
+
+
+async def test_a_forwarded_bare_ping_is_dropped_quietly(storage):
+    bot, _, _, pasted = _alerts_bot(storage)
+    message = _forward(PING)
+
+    await bot.on_message(message)
+
+    assert pasted == [] and message.reactions == []
+
+
+async def test_a_forward_with_no_text_or_card_is_still_reported(storage):
+    """A forwarded screenshot: nothing to read, so it is answered as
+    unreadable rather than dropped."""
+    bot, _, _, pasted = _alerts_bot(storage)
+
+    await bot.on_message(_forward(""))
+
+    assert pasted == [""]
+
+
+async def test_a_forwarded_card_goes_to_the_parser_as_its_paste_reads(storage):
+    bot, _, _, pasted = _alerts_bot(storage)
+
+    await bot.on_message(_forward(PING, [_card()]))
+
+    assert len(pasted) == 1
+    assert PING not in pasted[0]
+    assert pasted[0].splitlines()[0] == "🔴 BUY — AAPL 352.5P · Nov 18"
+
+
+@pytest.mark.parametrize(
+    "embed",
+    [
+        _card(),
+        _card(bold=True),                                       # bold values
+        _card(description="Entered AAPL Nov18 '26 352.5 Put"),  # dashboard as a button
+        _card(targets="25%   $3.000\n50%   $3.600\n75%   $4.200\n100%  $4.800"),  # no code block
+    ],
+)
+def test_a_forwarded_card_reads_as_the_contract_entry_and_tier(embed):
+    alert = _read(embed_text(embed))
+
+    assert isinstance(alert, EntryAlert), getattr(alert, "detail", alert)
+    assert alert.option == OptionKey("AAPL", date(2026, 11, 18), 352.5, "P")
+    assert alert.entry_price == 2.40
+    assert alert.tier == "normal"
+    assert [t.price for t in alert.trim_targets] == [3.0, 3.6, 4.2, 4.8]  # the checksum
+
+
+def test_a_forwarded_card_without_targets_is_still_read():
+    alert = _read(embed_text(_card(targets=None)))
+
+    assert isinstance(alert, EntryAlert)
+    assert alert.trim_targets == ()
+
+
+def test_a_forwarded_lotto_card_is_sized_as_a_lotto():
+    embed = _card(
+        description="Entered AAPL Nov18 '26 352.5 Put\n Lotto Trade — RISKY\n"
+        "[Open Live Dashboard →](https://example.com/live)"
+    )
+
+    assert _read(embed_text(embed)).tier == "lotto"
+
+
+def test_a_forwarded_card_whose_entry_disagrees_with_its_targets_is_rejected():
+    """The checksum still runs: $2.50 against targets built off $2.40."""
+    result = _read(embed_text(_card(entry="$2.50")))
+
+    assert isinstance(result, RejectedAlert)
+    assert result.reason is RejectReason.TRIM_TARGET_MISMATCH
+
+
+async def test_a_forwarded_card_is_bought_at_our_size_not_the_advisors(storage):
+    """The card says 10 contracts. Ours is $1,000 / $240 = 4."""
+    settings = make_settings(mode="paper")
+    broker = FakeBroker(bid=2.39, ask=2.40)
+    pipeline = AlertPipeline(settings, storage, RiskGate(settings, storage), broker)
+
+    result = await paste(
+        pipeline,
+        text=strip_mentions(alert_text(_forward(PING, [_card()]))),
+        moment=datetime(2026, 11, 16, 11, 0, tzinfo=EASTERN),
+        trading_day=NOV_16,
+    )
+
+    assert result.final_reaction == REACTION_PLACED
+    assert broker.orders == [("AAPL  261118P00352500", "BUY", 4, None)]
 
 
 async def test_a_close_from_anyone_else_is_ignored(storage):
