@@ -301,13 +301,26 @@ class PositionManager:
     # --- broker outages ------------------------------------------------------
 
     def _open_position_count(self) -> int:
-        """Storage, not just self.managed: after a restart with Gateway down,
+        """Open positions whose stop is blind while the broker is gone.
+
+        Storage, not just self.managed: after a restart with Gateway down,
         reconcile has not run yet, so nothing is tracked in memory even though
-        positions are open."""
+        positions are open.
+
+        An option past its expiry date is left out: it no longer exists at the
+        broker, so there is no stop to be blind. On 2026-11-17 Gateway went down
+        with a 0DTE SPX still on the books, and the bot pinged "unmanaged" every
+        15 minutes for days over a contract that had expired that evening.
+        """
+        today = self.today()
+        managed = sum(1 for m in self.managed.values() if m.state.option.expiry >= today)
         try:
-            return max(len(self.managed), len(self.storage.open_positions()))
+            stored = sum(
+                1 for _, state in self.storage.open_positions() if state.option.expiry >= today
+            )
         except Exception:
-            return len(self.managed)
+            return managed
+        return max(managed, stored)
 
     async def _while_disconnected(self) -> list[Notification]:
         """One poll's worth of outage handling: alert once, retry with backoff,

@@ -4,7 +4,7 @@ Runs the real pipeline, the real rules engine and the real PaperBroker over a
 scripted price path. Nothing is mocked except the prices themselves.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -746,6 +746,25 @@ async def test_open_positions_in_storage_count_even_before_reconcile(storage):
     (note,) = await manager.poll_once()
 
     assert note.level is Level.CRITICAL
+
+
+async def test_an_expired_position_is_not_at_risk_during_an_outage(storage):
+    """2026-11-17: Gateway went down with a 0DTE still on the books, and the
+    bot pinged "unmanaged" every 15 minutes for days after it had expired."""
+    feed, broker, manager, pipeline, clock, _ = _outage(storage, reconnects=False)
+    await enter(pipeline, feed)
+    manager.today = lambda: TRADING_DAY + timedelta(days=1)
+    await _drop(broker)
+
+    (note,) = await manager.poll_once()
+    reminders = []
+    for _ in range(int(2 * OUTAGE_REMINDER_SECONDS / 30) + 1):  # just over 30 minutes
+        clock.now += 30
+        reminders += [n for n in await manager.poll_once() if n.title == "Broker disconnected"]
+
+    assert note.level is Level.WARNING
+    assert not note.mentions_owner
+    assert reminders == []
 
 
 async def test_a_long_outage_with_positions_open_is_restated_every_15_minutes(storage):
