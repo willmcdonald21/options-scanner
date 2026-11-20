@@ -686,14 +686,18 @@ from using one login.
 
 The bot keeps going and reconnects by itself:
 
-- **one** alert when the connection drops. It is critical (a ping) only if a
-  position is open, because only then is a stop blind; otherwise a quiet warning.
+- **one** alert when the connection drops. It is critical (a ping) only if an
+  unexpired position is open, because only then is a stop blind; otherwise a
+  quiet warning. An option past its expiry date no longer counts.
 - retries every **30 seconds at most during market hours**, backing off to 5
   minutes outside them
 - a pasted alert **connects immediately** rather than waiting for the next retry
 - **"Broker reconnected"** when it is back, followed by a re-check of every
   position against IBKR
-- while positions are open and it is still down, a reminder every 15 minutes
+- while an unexpired position is open and it is still down, a reminder every 15
+  minutes **during market hours only**. Nothing can be sold outside them, so
+  there are no overnight reminders; the first poll after the open sends one if
+  it is still down.
 
 Gateway only opens its API port **after you sign in**. A Gateway window sitting at
 the login screen refuses the bot exactly like a closed one.
