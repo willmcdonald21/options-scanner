@@ -769,6 +769,7 @@ async def test_an_expired_position_is_not_at_risk_during_an_outage(storage):
 
 async def test_a_long_outage_with_positions_open_is_restated_every_15_minutes(storage):
     feed, broker, manager, pipeline, clock, _ = _outage(storage, reconnects=False)
+    manager._is_market_open = lambda: True
     await enter(pipeline, feed)
     await _drop(broker)
     await manager.poll_once()
@@ -780,6 +781,29 @@ async def test_a_long_outage_with_positions_open_is_restated_every_15_minutes(st
 
     assert len(reminders) == 2
     assert "Still not connected" in reminders[0].description
+
+
+async def test_outage_reminders_wait_for_the_market_to_open(storage):
+    """Nothing can be sold outside the session, so overnight there is no
+    restating -- but the first poll after the open says it at once."""
+    feed, broker, manager, pipeline, clock, _ = _outage(storage, reconnects=False)
+    await enter(pipeline, feed)
+    await _drop(broker)
+    await manager.poll_once()
+
+    overnight = []
+    for _ in range(int(4 * OUTAGE_REMINDER_SECONDS / 30)):  # an hour, market closed
+        clock.now += 30
+        overnight += [n for n in await manager.poll_once() if n.title == "Broker disconnected"]
+
+    manager._is_market_open = lambda: True
+    clock.now += 30
+    at_open = [n for n in await manager.poll_once() if n.title == "Broker disconnected"]
+
+    assert overnight == []
+    assert len(at_open) == 1
+    assert at_open[0].level is Level.CRITICAL
+    assert "Still not connected" in at_open[0].description
 
 
 async def test_reconnection_is_retried_with_a_growing_gap(storage):

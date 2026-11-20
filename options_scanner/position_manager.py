@@ -367,8 +367,16 @@ class PositionManager:
             outage.next_attempt = now + outage.backoff
             logger.info("still disconnected; next attempt in %.0fs", outage.backoff)
 
+        # Restated only in session: nothing can be sold outside it, so a ping
+        # every 15 minutes overnight only buries the one that matters. If the
+        # market opens with the broker still gone, the first poll after the
+        # open restates it at once, because the last alert is long past.
         open_count = self._open_position_count()
-        if open_count and now - outage.last_alert >= OUTAGE_REMINDER_SECONDS:
+        if (
+            open_count
+            and self._in_session()
+            and now - outage.last_alert >= OUTAGE_REMINDER_SECONDS
+        ):
             outage.last_alert = now
             notes.append(
                 broker_disconnected(
@@ -378,12 +386,14 @@ class PositionManager:
             )
         return notes
 
-    def _reconnect_ceiling(self) -> float:
+    def _in_session(self) -> bool:
         try:
-            in_session = self._is_market_open()
+            return bool(self._is_market_open())
         except Exception:
-            in_session = True  # unsure: prefer retrying too often over too rarely
-        return RECONNECT_MAX_IN_SESSION_SECONDS if in_session else RECONNECT_MAX_SECONDS
+            return True  # unsure: prefer retrying and reminding too often over too rarely
+
+    def _reconnect_ceiling(self) -> float:
+        return RECONNECT_MAX_IN_SESSION_SECONDS if self._in_session() else RECONNECT_MAX_SECONDS
 
     async def _finish_outage(self, outage: _Outage) -> list[Notification]:
         """The connection is back: say so, and re-check positions, which may
